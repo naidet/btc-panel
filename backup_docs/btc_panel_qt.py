@@ -554,19 +554,8 @@ class MainWindow(QMainWindow):
                 st += f"  |  {' '.join(ginfo)}"
             self.sig_text.setText(st)
 
-            # 信号条显示引擎加权方向，不是简单共振方向
-            if ml_dir:  # 使用引擎方向
-                bar_dir = ml_dir
-                bar_val = ml_conf
-                bar_clr = GREEN if ml_dir==1 else RED
-                bar_text = f"看{'多' if ml_dir==1 else '空'} {ml_conf:.0f}%"
-            else:  # 引擎没方向时用共振方向
-                bar_dir = direction
-                bar_val = abs(res_pct) if direction else 0
-                bar_clr = clr
-                bar_text = f"看{'多' if direction==1 else '空'} {abs_pct:.0f}%" if direction else ""
-
-            self.sig_bar.set_value(bar_val if bar_dir==1 else -bar_val, bar_clr, bar_text)
+            if direction: self.sig_bar.set_value(res_pct, clr, f"看{'多' if direction==1 else '空'} {abs_pct:.0f}%")
+            else: self.sig_bar.set_value(0, GRAY, "")
 
             # HMM
             hmm = self._hmm_state
@@ -746,61 +735,46 @@ class MainWindow(QMainWindow):
                 if (now - _last_trade_time).total_seconds() < cooldown*60:
                     time.sleep(30); continue
 
-                # 无持仓: 检查信号开仓
-                if (now - _last_trade_time).total_seconds() < cooldown*60:
-                    time.sleep(30); continue
-
                 # 交易时间过滤
                 time_ok, time_reason = is_trade_time_allowed(self.params)
                 if not time_ok:
                     self.log(f"自动: {time_reason}")
                     time.sleep(300); continue
 
-                # 获取引擎信号 (含组加权信号)
-                ml_data = getattr(self, '_cached_ml', None)
-                if not ml_data or not ml_data.get("ready"):
+                # 获取共振信号
+                res = getattr(self, '_cached_resonance', None)
+                if not res:
                     time.sleep(30); continue
 
-                # === 强化开仓条件 ===
-                # 1. 置信度 ≥75%
-                confidence = ml_data.get("confidence", 0)
-                if confidence < 0.75:
-                    self.log(f"自动: 置信度{confidence:.0%}<75%, 观望")
-                    time.sleep(60); continue
+                buys = sum(1 for r in res if r.get("signal") == 1)
+                sells = sum(1 for r in res if r.get("signal") == -1)
 
-                # 2. 强信号优先 (基频面+谐波段同向)
-                is_strong = ml_data.get("strong", False)
-                if not is_strong:
-                    self.log(f"自动: 信号非强(多周期矛盾), 跳过")
-                    time.sleep(60); continue
-
-                direction = ml_data.get("signal", 0)
-                if direction == 1:   # 看多
+                if buys >= thresh:
                     passed, reason = check_risk_gates(self.symbol, "BUY", self.params)
                     if not passed:
                         self.log(f"自动: 开多风控未通过: {reason}")
                         time.sleep(60); continue
                     hmm_s = get_hmm_state().get("state",-1)
-                    if hmm_s == 2:
+                    if self.symbol in SYMBOL_PARAMS and hmm_s == 2:
                         self.log("自动: HMM高波回撤, 跳过开多")
                         time.sleep(60); continue
-                    self.log(f"自动: 强看多{confidence:.0%}, 开多")
+                    self.log(f"自动: 共振{buys}/3看涨, 开多")
                     result = execute_trade("BUY", self.symbol, self.params)
                     self.log(f"自动: {result.get('msg','')}")
                     if result.get("ok"):
                         _last_trade_time = now
                         _peak_profit = 0.0
 
-                elif direction == -1: # 看空
+                elif sells >= thresh:
                     passed, reason = check_risk_gates(self.symbol, "SELL", self.params)
                     if not passed:
                         self.log(f"自动: 开空风控未通过: {reason}")
                         time.sleep(60); continue
                     hmm_s = get_hmm_state().get("state",-1)
-                    if hmm_s == 1:
+                    if self.symbol in SYMBOL_PARAMS and hmm_s == 1:
                         self.log("自动: HMM强势趋势, 跳过开空")
                         time.sleep(60); continue
-                    self.log(f"自动: 强看空{confidence:.0%}, 开空")
+                    self.log(f"自动: 共振{sells}/3看跌, 开空")
                     result = execute_trade("SELL", self.symbol, self.params)
                     self.log(f"自动: {result.get('msg','')}")
                     if result.get("ok"):
