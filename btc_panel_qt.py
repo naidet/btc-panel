@@ -136,6 +136,7 @@ class MainWindow(QMainWindow):
         self._has_position = False; self._position_side = None
         self._fetch_busy = False; self._binance_ok = False
         self._cached_data = {}; self._cached_ml = {}; self._cached_resonance = []
+        self._cached_filter_info = {}
         self._resonance_fail_count = 0
         self._hmm_state = {"state": -1, "label": "加载中...", "confidence": 0}
         self._last_hmm_log = ""
@@ -149,6 +150,15 @@ class MainWindow(QMainWindow):
         self._setup_statusbar()
         self._init_tooltips()  # 所有名词解释
         self._delayed_init()
+
+        # 启动横幅
+        self.log("╔══════════════════════════════════════════════╗")
+        self.log("║  BTC AI 交易面板 v3  |  #60107268           ║")
+        self.log("║  多周期共振 + ML引擎 + HMM状态 + 风控系统   ║")
+        self.log("╚══════════════════════════════════════════════╝")
+        self.log(f"⚙️ 品种: {SYMBOL_NAMES.get(self.symbol, self.symbol)} ({self.symbol})")
+        self.log(f"⚙️ 刷新间隔: 5秒 | 自动交易: 未启动")
+        self.log("🚀 系统就绪，开始数据刷新...")
 
     def _setup_menubar(self):
         mb = self.menuBar()
@@ -404,7 +414,6 @@ class MainWindow(QMainWindow):
         ts = datetime.now().strftime("[%H:%M:%S]")
         self.log_area.append(f"{ts} {msg}")
         sb = self.log_area.verticalScrollBar(); sb.setValue(sb.maximum())
-
     def _on_trade(self, action):
         def _threaded():
             self.log(f"⏳ 正在执行: {action} ...")
@@ -479,30 +488,66 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self._fetch_and_update, daemon=True).start()
 
     def _fetch_and_update(self):
+        _t0 = time.time()
+        _round = getattr(self, '_fetch_round', 0) + 1
+        self._fetch_round = _round
+        sym_name = SYMBOL_NAMES.get(self.symbol, self.symbol)
+        self.signals.log_msg.emit(f"════════ 第{_round}轮刷新 [{sym_name}] ════════")
+
         try:
+            # Step 1: MT5数据获取
+            _t1 = time.time()
+            self.signals.log_msg.emit(f"📡 [1/6] 连接MT5获取数据...")
             data, ml, resonance, filter_info = fetch_dashboard_data(self.symbol, self.params)
-            self.signals.log_msg.emit(f"🔍 数据获取: data={bool(data)}, ml={bool(ml)}, resonance={len(resonance)}, filter_info={bool(filter_info)}")
+            _t_data = time.time() - _t1
+            if data:
+                p = data.get("price", 0)
+                self.signals.log_msg.emit(f"   ✓ 报价 ${p:,.2f} | K线获取完成 ({_t_data:.1f}s)")
+            else:
+                self.signals.log_msg.emit(f"   ✗ MT5数据获取失败")
+            if ml and ml.get("ready"):
+                ml_dir_s = "多" if ml.get("signal")==1 else ("空" if ml.get("signal")==-1 else "无")
+                self.signals.log_msg.emit(f"   ✓ ML引擎: 看{ml_dir_s} {ml.get('confidence',0):.0%} | 强信号={'是' if ml.get('strong') else '否'}")
+            if resonance:
+                buys = sum(1 for r in resonance if r.get("signal")==1)
+                sells = sum(1 for r in resonance if r.get("signal")==-1)
+                self.signals.log_msg.emit(f"   ✓ 多周期共振: {buys}多/{sells}空 (共{len(resonance)}周期)")
+
+            # Step 2: HMM状态
             if self.symbol in self._hmm_symbols:
+                _t2 = time.time()
+                self.signals.log_msg.emit(f"🧠 [2/6] HMM市场状态识别...")
                 try:
                     from hmm_state import predict_current_state
                     self._hmm_state = predict_current_state(self.symbol)
                 except Exception as e:
-                    self._hmm_state = {"state":-1,"label":f"错误:{e}","confidence":0}; self.signals.log_msg.emit(f"⚠ HMM异常: {e}")
+                    self._hmm_state = {"state":-1,"label":f"错误:{e}","confidence":0}
+                    self.signals.log_msg.emit(f"   ✗ HMM异常: {e}")
                 else:
                     hmm = self._hmm_state
                     if hmm.get("state",-1) >= 0:
+                        self.signals.log_msg.emit(f"   ✓ {hmm['label']} (置信度{hmm['confidence']:.0%}, 预计持续{hmm.get('expected_duration',0)}根H4)")
                         key = f"{hmm.get('state')}_{hmm.get('label')}"
                         if key != self._last_hmm_log:
                             self._last_hmm_log = key
-                            self.signals.log_msg.emit(f"🧠 HMM: {hmm['label']} (置信度{hmm['confidence']:.0%})")
+                _t_hmm = time.time() - _t2
+            else:
+                self.signals.log_msg.emit(f"🧠 [2/6] HMM: {sym_name}未配置, 跳过")
+
+            # Step 3: 发送到UI
+            self.signals.log_msg.emit(f"🖥️ [3/6] 更新界面...")
             self.signals.update_ui.emit(data, ml, resonance, filter_info or {})
+
+            _t_total = time.time() - _t0
+            self.signals.log_msg.emit(f"──────── 刷新完成 (耗时{_t_total:.1f}s) ────────")
         except Exception as e:
-            self.signals.log_msg.emit(f"数据异常: {e}")
+            self.signals.log_msg.emit(f"❌ 刷新异常: {e}")
+            import traceback; self.signals.log_msg.emit(f"   {traceback.format_exc().splitlines()[-1]}")
         finally:
             self._fetch_busy = False
 
     def _update_ui(self, data, ml, resonance, filter_info):
-        self.signals.log_msg.emit(f"📊 UI更新开始: data={bool(data)}, ml={bool(ml)}, res={len(resonance)}")
+        self._cached_filter_info = filter_info
         try:
             self._cached_data = data; self._cached_ml = ml
             if resonance and len(resonance) > 0:
@@ -511,12 +556,14 @@ class MainWindow(QMainWindow):
                 self._resonance_fail_count += 1
                 if self._resonance_fail_count > 3: self._cached_resonance = None
 
+            # ── 价格 ──
             p = data.get("price", 0)
             if p:
                 self.price_big.setText(f"$ {p:,.2f}")
                 self.price_sub.setText(f"Bid: ${p:,.2f}  Ask: ${data.get('ask',0):,.2f}")
                 self.sb_mt5.setText("● 已连接"); self.sb_mt5.setStyleSheet("color: #00d26a;")
 
+            # ── 持仓 ──
             pos = data.get("position")
             if pos:
                 self._has_position = True; self._position_side = pos["side"]
@@ -538,6 +585,7 @@ class MainWindow(QMainWindow):
 
             if data.get("balance"): self.signals.update_risk.emit(get_daily_pnl())
 
+            # ── 共振分析 ──
             rd = resonance if resonance and len(resonance)>0 else self._cached_resonance or []
             buys = sum(1 for r in rd if r.get("signal")==1); sells = sum(1 for r in rd if r.get("signal")==-1)
             total = len(rd)
@@ -563,8 +611,6 @@ class MainWindow(QMainWindow):
             if conflict: txt += "  ⚠ 信号分歧"; clr = "#ff6b6b"
             if not ml.get("strong") and ml_dir:
                 txt += " (中等信号)"
-            # sig_label 现在在主信号部分设置，这里只计算txt用于日志或其他用途
-            # self.sig_label.setText(txt); self.sig_label.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {clr};")
 
             st = f"共振 {buys}多/{sells}空  |  引擎: {ed}{ml_conf:.0f}%"
             if conflict: st += "  |  ⚠信号分歧"
@@ -580,16 +626,36 @@ class MainWindow(QMainWindow):
                 st += f"  |  {' '.join(ginfo)}"
             self.sig_text.setText(st)
 
-            # 主信号更新 (合并到sig_label)
+            # ── 主信号 ──
             try:
+                self.signals.log_msg.emit(f"🎯 [4/6] 计算主信号(加权聚合)...")
+                _ts = time.time()
                 signal = get_trade_signal(self.symbol, self.params)
                 dir_val = signal.get("direction", 0)
                 strength = signal.get("strength", "弱")
                 reason = signal.get("reason", "")
                 conf = signal.get("confidence", 0)
-                
-                self.signals.log_msg.emit(f"🔍 主信号计算: dir={dir_val}, strength={strength}, conf={conf:.1%}")
-                
+                components = signal.get("components", {})
+                weighted = signal.get("weighted", {})
+
+                # 输出各层信号详情
+                comp = components
+                base_s = comp.get("base", 0)
+                harm_s = comp.get("harmonic", 0)
+                pulse_s = comp.get("pulse", 0)
+                hmm_s = comp.get("hmm", 0)
+                layer_map = {"base": "基频面", "harmonic": "谐波段", "pulse": "脉冲层", "hmm": "HMM"}
+                for key, label in [("base","基频面(权重2.5)"), ("harmonic","谐波段(权重2.0)"), ("pulse","脉冲层(权重1.0)"), ("hmm","HMM(权重1.5)")]:
+                    sv = comp.get(key, 0)
+                    sdir = "做多" if sv==1 else ("做空" if sv==-1 else "中性")
+                    self.signals.log_msg.emit(f"   • {label}: {sdir}")
+
+                w_buy = weighted.get("BUY", 0)
+                w_sell = weighted.get("SELL", 0)
+                w_total = w_buy + w_sell
+                w_label = "做多" if w_buy > w_sell else ("做空" if w_sell > w_buy else "中性")
+                self.signals.log_msg.emit(f"   → 加权结果: {w_label} (多{w_buy:.1f} vs 空{w_sell:.1f})")
+
                 if dir_val == 1:
                     icon = "◆" if strength == "强烈" else "◇"
                     text = f"{strength}做多 {conf:.0%}"
@@ -602,31 +668,31 @@ class MainWindow(QMainWindow):
                     icon = "─"
                     text = "观望"
                     color = GRAY
-                
+
                 self.main_signal_icon.setText(icon)
                 self.main_signal_icon.setStyleSheet(f"color: {color}; font-size: 24px; font-weight: bold;")
                 self.sig_label.setText(text)
                 self.sig_label.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {color};")
                 self.main_signal_reason.setText(reason)
-                
-                self.signals.log_msg.emit(f"✅ 主信号更新: [{icon}] {text}")
-                
+
+                self.signals.log_msg.emit(f"   ✓ 主信号: [{icon}] {text} ({time.time()-_ts:.2f}s)")
+
                 # 如果主信号没有设置，设置一个默认值
                 if self.sig_label.text() in ["- 等待数据...", ""]:
                     self.sig_label.setText("信号加载中...")
                     self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
             except Exception as e:
                 error_msg = f"信号计算错误: {e}"
-                self.signals.log_msg.emit(f"❌ {error_msg}")
+                self.signals.log_msg.emit(f"   ❌ {error_msg}")
                 self.main_signal_icon.setText("?"); self.sig_label.setText("信号计算错误"); self.main_signal_reason.setText(str(e)[:60])
 
-            # 信号条显示引擎加权方向，不是简单共振方向
-            if ml_dir:  # 使用引擎方向
+            # ── 信号条 ──
+            if ml_dir:
                 bar_dir = ml_dir
                 bar_val = ml_conf
                 bar_clr = GREEN if ml_dir==1 else RED
                 bar_text = f"看{'多' if ml_dir==1 else '空'} {ml_conf:.0f}%"
-            else:  # 引擎没方向时用共振方向
+            else:
                 bar_dir = direction
                 bar_val = abs(res_pct) if direction else 0
                 bar_clr = clr
@@ -634,7 +700,7 @@ class MainWindow(QMainWindow):
 
             self.sig_bar.set_value(bar_val if bar_dir==1 else -bar_val, bar_clr, bar_text)
 
-            # HMM (现在合并到信号卡第一行)
+            # ── HMM标签 ──
             hmm = self._hmm_state
             if hmm and hmm["state"] >= 0:
                 hl = hmm["label"]; hc = hmm["confidence"]
@@ -649,7 +715,7 @@ class MainWindow(QMainWindow):
                 self.hmm_label.setStyleSheet("color: #7a7a9e; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #2a2a44;")
                 self.hmm_conf.setText("")
 
-            # 按钮
+            # ── 按钮状态 ──
             if self._has_position:
                 self.btn_close.setProperty("active",True); self.btn_close.setText("📊 平仓 (CLOSE)")
                 self.btn_buy.setProperty("active",True); self.btn_buy.setText("📈 做多 (BUY)")
@@ -664,7 +730,8 @@ class MainWindow(QMainWindow):
             for btn in [self.btn_buy,self.btn_sell,self.btn_close,self.btn_reverse]:
                 btn.style().unpolish(btn); btn.style().polish(btn)
 
-            # 详情
+            # ── 详情区 [5/6] ──
+            self.signals.log_msg.emit(f"📋 [5/6] 更新详情区...")
             nm = {"1h":"脉冲层","4h":"谐波段","1d":"基频面"}
             rd2 = []
             if ml.get("ready"):
@@ -682,7 +749,17 @@ class MainWindow(QMainWindow):
                     ds.setText(dt); cl2 = GREEN if '多' in dt else (RED if '空' in dt else '#e0e0e0')
                     ds.setStyleSheet(f"color: {cl2}; font-weight: bold; font-size: 12px;")
                     dp.setText(pct_t); bar.set_value(bp,bc)
-        except: pass
+
+            # ── [6/6] 完成 ──
+            bal = data.get('balance', 0)
+            eq = data.get('equity', 0)
+            pos_str = f"持仓:{self._position_side}({'+' if (pos and pos['profit']>=0) else ''}${pos['profit']:.0f})" if pos else "空仓"
+            self.signals.log_msg.emit(f"💰 [6/6] 账户: 余额${bal:,.0f} 净值${eq:,.0f} | {pos_str}")
+
+        except Exception as e:
+            import traceback
+            self.signals.log_msg.emit(f"❌ UI更新异常: {e}")
+            self.signals.log_msg.emit(f"   {traceback.format_exc().splitlines()[-1]}")
 
     def _update_risk_status(self, daily):
         pnl = daily.get("pnl",0); bal = daily.get("balance",0)
@@ -743,7 +820,15 @@ class MainWindow(QMainWindow):
         _peak_profit = 0.0
         _last_trail_mod = 0
         _last_trail_price = 0.0
+        _loop_count = 0
+        self.log("🤖 ═══════════════════════════════════════════")
+        self.log("🤖  自动交易引擎已启动")
+        self.log(f"🤖  品种: {SYMBOL_NAMES.get(self.symbol, self.symbol)} ({self.symbol})")
+        self.log(f"🤖  策略: 加权信号 + HMM过滤 + 风控 + 移动止损")
+        self.log(f"🤖  开仓条件: 强信号 + 置信度≥75% + HMM通过 + 风控通过")
+        self.log("🤖 ═══════════════════════════════════════════")
         while self.auto_enabled:
+            _loop_count += 1
             try:
                 now = datetime.now()
                 self.params = load_params()
@@ -753,29 +838,33 @@ class MainWindow(QMainWindow):
                 profit_lock_pullback = float(self.params.get("profit_lock_pullback",30))
                 trail_dist_points = float(self.params.get("trail_dist",300))
 
-                # 日亏检查
+                # ── 风控：日亏检查 ──
                 daily = get_daily_pnl()
                 max_daily = float(self.params.get("max_daily_loss",100))
                 if daily.get("pnl",0) <= -abs(max_daily):
-                    self.log(f"自动: 日亏${abs(daily['pnl']):.0f} >= ${max_daily}, 暂停5分钟")
+                    self.log(f"🛑 风控: 日亏${abs(daily['pnl']):.0f}≥${max_daily}, 引擎暂停5分钟")
                     time.sleep(300); continue
 
-                # 获取报价和持仓 (通过btc_panel, 自动管理MT5)
+                # ── 获取报价 ──
                 tick, info = get_mt5_tick(self.symbol)
                 if not tick or not info:
-                    self.log("自动: 获取报价失败, 等待10秒")
+                    self.log("⚠️  报价获取失败, 10秒后重试")
                     time.sleep(10); continue
                 price = tick.bid
 
                 positions = get_mt5_positions(self.symbol)
                 has_position = positions and len(positions) > 0
 
-                # 有持仓: 监控移动止损和盈利回撤
+                # ── 有持仓：管理止盈止损 ──
                 if has_position:
                     p = positions[0]
                     current_sl = p.sl or 0
                     pnl = p.profit
                     side = "BUY" if p.type == 0 else "SELL"
+                    side_cn = "多" if p.type == 0 else "空"
+
+                    if _loop_count % 5 == 0:  # 每5轮输出一次持仓状态
+                        self.log(f"📊 持仓监控: {side_cn} ${pnl:+.2f} | SL={current_sl:.1f} | 距止损={abs(price-current_sl):.1f}")
 
                     # 盈利回撤保护
                     if pnl > _peak_profit:
@@ -783,7 +872,7 @@ class MainWindow(QMainWindow):
                     if _peak_profit > profit_lock_trigger:
                         pullback_pct = (_peak_profit - pnl) / _peak_profit * 100 if _peak_profit > 0 else 0
                         if pullback_pct >= profit_lock_pullback:
-                            self.log(f"自动: 利润峰值${_peak_profit:.1f} 回落{pullback_pct:.0f}%, 平仓")
+                            self.log(f"🔒 止盈: 峰值${_peak_profit:.1f} 回落{pullback_pct:.0f}% → 自动平仓")
                             execute_trade("CLOSE", self.symbol, self.params)
                             _last_trade_time = now
                             _peak_profit = 0.0
@@ -798,6 +887,7 @@ class MainWindow(QMainWindow):
                             if new_sl > current_sl + 50*point and abs(new_sl - _last_trail_price) > 20*point:
                                 _last_trail_price = new_sl
                                 _last_trail_mod = now_ts
+                                self.log(f"📈 移动止损: 多单 SL {current_sl:.1f} → {new_sl:.1f} (锁定利润)")
                                 threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
                         else:
                             new_sl = price + tr_dist_price
@@ -805,79 +895,79 @@ class MainWindow(QMainWindow):
                                 if abs(new_sl - _last_trail_price) > 20*point:
                                     _last_trail_price = new_sl
                                     _last_trail_mod = now_ts
+                                    self.log(f"📉 移动止损: 空单 SL {current_sl:.1f} → {new_sl:.1f} (锁定利润)")
                                     threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
 
                     time.sleep(60); continue
 
-                # 无持仓: 检查信号开仓
+                # ── 无持仓：检查信号开仓 ──
                 if (now - _last_trade_time).total_seconds() < cooldown*60:
+                    remaining = cooldown*60 - (now - _last_trade_time).total_seconds()
+                    if _loop_count % 10 == 0:
+                        self.log(f"⏳ 冷却中: 还需{remaining:.0f}秒后可开仓")
                     time.sleep(30); continue
 
-                # 无持仓: 检查信号开仓
-                if (now - _last_trade_time).total_seconds() < cooldown*60:
-                    time.sleep(30); continue
-
-                # 交易时间过滤 (已关闭)
-                # time_ok, time_reason = is_trade_time_allowed(self.params)
-                # if not time_ok:
-                #     self.log(f"自动: {time_reason}")
-                #     time.sleep(300); continue
-
-                # 获取引擎信号 (含组加权信号)
+                # 获取引擎信号
                 ml_data = getattr(self, '_cached_ml', None)
                 if not ml_data or not ml_data.get("ready"):
+                    if _loop_count % 10 == 0:
+                        self.log("⏳ 等待引擎数据就绪...")
                     time.sleep(30); continue
 
-                # === 强化开仓条件 ===
-                # 1. 置信度 ≥75%
+                # ── 开仓条件1: 置信度≥75% ──
                 confidence = ml_data.get("confidence", 0)
                 if confidence < 0.75:
-                    self.log(f"自动: 置信度{confidence:.0%}<75%, 观望")
+                    if _loop_count % 10 == 0:
+                        self.log(f"🔍 信号检查: 置信度{confidence:.0%}<75% → 观望")
                     time.sleep(60); continue
 
-                # 2. 强信号优先 (基频面+谐波段同向)
+                # ── 开仓条件2: 强信号(基频面+谐波段同向) ──
                 is_strong = ml_data.get("strong", False)
                 if not is_strong:
-                    self.log(f"自动: 信号非强(多周期矛盾), 跳过")
+                    if _loop_count % 10 == 0:
+                        self.log(f"🔍 信号检查: 非强信号(多周期矛盾) → 跳过")
                     time.sleep(60); continue
 
                 direction = ml_data.get("signal", 0)
+                group_sigs = ml_data.get("group_signals", {})
+
+                # ── 开仓执行 ──
                 if direction == 1:   # 看多
+                    self.log(f"🔔 信号触发: 强看多 {confidence:.0%} | 组信号: {group_sigs}")
                     passed, reason = check_risk_gates(self.symbol, "BUY", self.params)
                     if not passed:
-                        self.log(f"自动: 开多风控未通过: {reason}")
+                        self.log(f"🛑 风控拦截(多): {reason} → 取消开仓")
                         time.sleep(60); continue
-                    # 通过 _cached_filter_info 获取 HMM 状态
                     hmm_s = -1
                     fi = getattr(self, '_cached_filter_info', {})
                     if fi:
                         hmm_s = fi.get("hmm_state", -1)
-                    if hmm_s == 2:  # 高波回撤，不做多
-                        self.log("自动: HMM高波回撤, 跳过开多")
+                    if hmm_s == 2:
+                        self.log(f"🛑 HMM拦截(多): 高波回撤状态 → 取消开多")
                         time.sleep(60); continue
-                    self.log(f"自动: 强看多{confidence:.0%}, 开多")
+                    self.log(f"✅ 全部通过 → 执行开多 (置信度{confidence:.0%})")
                     result = execute_trade("BUY", self.symbol, self.params)
-                    self.log(f"自动: {result.get('msg','')}")
+                    self.log(f"{'✅' if result.get('ok') else '❌'} 开多结果: {result.get('msg','')}")
                     if result.get("ok"):
                         _last_trade_time = now
                         _peak_profit = 0.0
 
                 elif direction == -1: # 看空
+                    self.log(f"🔔 信号触发: 强看空 {confidence:.0%} | 组信号: {group_sigs}")
                     passed, reason = check_risk_gates(self.symbol, "SELL", self.params)
                     if not passed:
-                        self.log(f"自动: 开空风控未通过: {reason}")
+                        self.log(f"🛑 风控拦截(空): {reason} → 取消开仓")
                         time.sleep(60); continue
-                    # 通过 _cached_filter_info 获取 HMM 状态
                     hmm_s = -1
                     fi = getattr(self, '_cached_filter_info', {})
                     if fi:
                         hmm_s = fi.get("hmm_state", -1)
-                    if hmm_s == 0:  # 强势趋势，不做空 (注意：原文是 hmm_s == 1，应该为 0)
-                        self.log("自动: HMM强势趋势, 跳过开空")
+                    if hmm_s == 0:
+                        self.log(f"🛑 HMM拦截(空): 强势趋势状态 → 取消开空")
                         time.sleep(60); continue
-                    self.log(f"自动: 强看空{confidence:.0%}, 开空")
+                    self.log(f"✅ 全部通过 → 执行开空 (置信度{confidence:.0%})")
                     result = execute_trade("SELL", self.symbol, self.params)
-                    self.log(f"自动: {result.get('msg','')}")
+                    self.log(f"{'✅' if result.get('ok') else '❌'} 开空结果: {result.get('msg','')}")
                     if result.get("ok"):
                         _last_trade_time = now
                         _peak_profit = 0.0
@@ -885,7 +975,7 @@ class MainWindow(QMainWindow):
                 time.sleep(120)
             except Exception as loop_err:
                 try:
-                    self.log(f"自动: 循环异常: {loop_err}")
+                    self.log(f"❌ 引擎异常: {loop_err}")
                 except: pass
                 time.sleep(30)
     def _modify_sl(self, ticket, new_sl):
