@@ -211,7 +211,7 @@ class MainWindow(QMainWindow):
         sig_row1 = QHBoxLayout()
         self.main_signal_icon = QLabel("◆"); self.main_signal_icon.setStyleSheet("font-size: 24px; font-weight: bold; color: #e0e0e0;")
         sig_row1.addWidget(self.main_signal_icon)
-        self.sig_label = QLabel("- 等待数据..."); self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
+        self.sig_label = QLabel("实时信号加载中..."); self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
         sig_row1.addWidget(self.sig_label, 1)
         
         # HMM标签 (右边显示)
@@ -481,6 +481,7 @@ class MainWindow(QMainWindow):
     def _fetch_and_update(self):
         try:
             data, ml, resonance, filter_info = fetch_dashboard_data(self.symbol, self.params)
+            self.signals.log_msg.emit(f"🔍 数据获取: data={bool(data)}, ml={bool(ml)}, resonance={len(resonance)}, filter_info={bool(filter_info)}")
             if self.symbol in self._hmm_symbols:
                 try:
                     from hmm_state import predict_current_state
@@ -501,6 +502,7 @@ class MainWindow(QMainWindow):
             self._fetch_busy = False
 
     def _update_ui(self, data, ml, resonance, filter_info):
+        self.signals.log_msg.emit(f"📊 UI更新开始: data={bool(data)}, ml={bool(ml)}, res={len(resonance)}")
         try:
             self._cached_data = data; self._cached_ml = ml
             if resonance and len(resonance) > 0:
@@ -586,6 +588,8 @@ class MainWindow(QMainWindow):
                 reason = signal.get("reason", "")
                 conf = signal.get("confidence", 0)
                 
+                self.signals.log_msg.emit(f"🔍 主信号计算: dir={dir_val}, strength={strength}, conf={conf:.1%}")
+                
                 if dir_val == 1:
                     icon = "◆" if strength == "强烈" else "◇"
                     text = f"{strength}做多 {conf:.0%}"
@@ -604,7 +608,16 @@ class MainWindow(QMainWindow):
                 self.sig_label.setText(text)
                 self.sig_label.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {color};")
                 self.main_signal_reason.setText(reason)
+                
+                self.signals.log_msg.emit(f"✅ 主信号更新: [{icon}] {text}")
+
+            # 如果主信号没有设置，设置一个默认值
+            if self.sig_label.text() in ["- 等待数据...", ""]:
+                self.sig_label.setText("信号加载中...")
+                self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
             except Exception as e:
+                error_msg = f"信号计算错误: {e}"
+                self.signals.log_msg.emit(f"❌ {error_msg}")
                 self.main_signal_icon.setText("?"); self.sig_label.setText("信号计算错误"); self.main_signal_reason.setText(str(e)[:60])
 
             # 信号条显示引擎加权方向，不是简单共振方向
