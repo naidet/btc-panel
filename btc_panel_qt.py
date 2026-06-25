@@ -497,7 +497,7 @@ class MainWindow(QMainWindow):
 
     def _start_update_timer(self):
         self._update_timer = QTimer(); self._update_timer.timeout.connect(self._trigger_fetch)
-        self._update_timer.start(5000); self._trigger_fetch()
+        self._update_timer.start(60000); self._trigger_fetch()
 
     def _trigger_fetch(self):
         if self._fetch_busy: return
