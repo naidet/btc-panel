@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# 数据文件（不纳入版本管理）
+*.log
+*.csv
+*.xlsx
+*.db
+*.sqlite
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# 编译备份（如果有）
+backup_*.py
+*_backup.py
+*_old.py
+
+# 不跟踪 panel_params.json 的本地修改（用 panel_params.json.example 做模板）
+panel_params.json
