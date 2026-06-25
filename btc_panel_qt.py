@@ -203,14 +203,32 @@ class MainWindow(QMainWindow):
             self.bal_frame.layout().addWidget(w)
         pr.addWidget(self.bal_frame, 2); ml.addLayout(pr)
 
-        self.sig_frame = self._make_card("实时信号")
-        self.sig_label = QLabel("- 等待数据..."); self.sig_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #7a7a9e;")
+        # 合并版信号卡 (实时信号 + 主信号)
+        sig_card = self._make_card("实时信号 (含主信号)")
+        slayout = QVBoxLayout(sig_card); slayout.setSpacing(8)
+        
+        # 第一行: 大号主信号
+        sig_row1 = QHBoxLayout()
+        self.main_signal_icon = QLabel("◆"); self.main_signal_icon.setStyleSheet("font-size: 24px; font-weight: bold; color: #e0e0e0;")
+        sig_row1.addWidget(self.main_signal_icon)
+        self.sig_label = QLabel("- 等待数据..."); self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
+        sig_row1.addWidget(self.sig_label, 1)
+        slayout.addLayout(sig_row1)
+        
+        # 第二行: 信号条 + 详细标签
         self.sig_bar = SignalBar(); self.sig_bar.setFixedHeight(32)
+        slayout.addWidget(self.sig_bar)
+        
+        # 第三行: 共振/HMM/引擎信息
         self.sig_text = QLabel("共振: -/-  |  引擎: ~"); self.sig_text.setStyleSheet("color: #7a7a9e; font-size: 13px;")
-        self.sig_frame.layout().addWidget(self.sig_label)
-        self.sig_frame.layout().addWidget(self.sig_bar)
-        self.sig_frame.layout().addWidget(self.sig_text)
-        ml.addWidget(self.sig_frame)
+        slayout.addWidget(self.sig_text)
+        
+        # 第四行: 主信号详细理由 (小号灰色)
+        self.main_signal_reason = QLabel(""); self.main_signal_reason.setStyleSheet("color: #7a7a9e; font-size: 11px; padding: 0px 4px;")
+        slayout.addWidget(self.main_signal_reason)
+        
+        ml.addWidget(sig_card)
+        self.sig_frame = sig_card
 
         hf = QFrame(); hf.setStyleSheet(f"background: {CARD}; border-radius: 6px; padding: 8px 12px;")
         hr = QHBoxLayout(hf); hr.setContentsMargins(0,0,0,0)
@@ -220,27 +238,9 @@ class MainWindow(QMainWindow):
         self.hmm_conf = QLabel(""); self.hmm_conf.setStyleSheet("color: #7a7a9e; font-size: 12px;")
         hr.addWidget(self.hmm_conf); ml.addWidget(hf); self.hmm_frame = hf
 
-        # 主信号 (手工开仓参考)
-        main_frame = QFrame(); main_frame.setStyleSheet(f"background: {CARD}; border-radius: 6px; padding: 8px 12px; margin: 0px;")
-        ml2 = QHBoxLayout(main_frame); ml2.setContentsMargins(0,0,0,0); ml2.setSpacing(10)
-        
-        # 图标区域
-        icon_frame = QFrame(); icon_frame.setStyleSheet("background: #222244; border-radius: 4px; padding: 6px 10px;")
-        icon_layout = QVBoxLayout(icon_frame); icon_layout.setContentsMargins(0,0,0,0)
-        self.main_signal_icon = QLabel("◆"); self.main_signal_icon.setStyleSheet("font-size: 24px; font-weight: bold; color: #e0e0e0;")
-        icon_layout.addWidget(self.main_signal_icon, 0, Qt.AlignCenter)
-        ml2.addWidget(icon_frame)
-        
-        # 文字区域
-        text_frame = QFrame(); text_frame.setStyleSheet("background: transparent;")
-        text_layout = QVBoxLayout(text_frame); text_layout.setContentsMargins(0,0,0,0); text_layout.setSpacing(2)
-        self.main_signal_text = QLabel("主信号加载中..."); self.main_signal_text.setStyleSheet("font-size: 14px; font-weight: bold; color: #e0e0e0;")
-        self.main_signal_reason = QLabel(""); self.main_signal_reason.setStyleSheet("font-size: 11px; color: #7a7a9e;")
-        text_layout.addWidget(self.main_signal_text)
-        text_layout.addWidget(self.main_signal_reason)
-        ml2.addWidget(text_frame, 1)
-        
-        ml.addWidget(main_frame)
+        # 合并到实时信号卡中，移除冗余主信号区域
+        # 实时信号卡增加主信号信息显示
+        # ...
 
         self.detail_frame = QFrame(); self.detail_frame.setVisible(False)
         self.detail_frame.setStyleSheet(f"background: {CARD}; border-radius: 6px; padding: 10px;")
@@ -576,7 +576,7 @@ class MainWindow(QMainWindow):
                 st += f"  |  {' '.join(ginfo)}"
             self.sig_text.setText(st)
 
-            # 主信号更新
+            # 主信号更新 (合并到sig_label)
             try:
                 signal = get_trade_signal(self.symbol, self.params)
                 dir_val = signal.get("direction", 0)
@@ -599,11 +599,11 @@ class MainWindow(QMainWindow):
                 
                 self.main_signal_icon.setText(icon)
                 self.main_signal_icon.setStyleSheet(f"color: {color}; font-size: 24px; font-weight: bold;")
-                self.main_signal_text.setText(text)
-                self.main_signal_text.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: bold;")
+                self.sig_label.setText(text)
+                self.sig_label.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {color};")
                 self.main_signal_reason.setText(reason)
             except Exception as e:
-                self.main_signal_icon.setText("?"); self.main_signal_text.setText("信号计算错误"); self.main_signal_reason.setText(str(e)[:60])
+                self.main_signal_icon.setText("?"); self.sig_label.setText("信号计算错误"); self.main_signal_reason.setText(str(e)[:60])
 
             # 信号条显示引擎加权方向，不是简单共振方向
             if ml_dir:  # 使用引擎方向
