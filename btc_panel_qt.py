@@ -21,7 +21,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QAction, QIcon, QPainter, QBr
 
 from btc_panel import (
     execute_trade, fetch_all_mt5_data, fetch_dashboard_data, check_risk_gates, get_daily_pnl,
-    get_mt5_tick, get_mt5_positions, get_mt5_account_info, get_hmm_state, get_trade_signal,
+    get_mt5_tick, get_mt5_positions, get_mt5_account_info, update_hmm_state, get_trade_signal,
     _mt5_lock, MT5_PATH, DEFAULT_PARAMS, load_params, save_params,
     SYMBOLS, SYMBOL_NAMES, SYMBOL_PARAMS,
     is_trade_time_allowed,
@@ -790,11 +790,11 @@ class MainWindow(QMainWindow):
                 if (now - _last_trade_time).total_seconds() < cooldown*60:
                     time.sleep(30); continue
 
-                # 交易时间过滤
-                time_ok, time_reason = is_trade_time_allowed(self.params)
-                if not time_ok:
-                    self.log(f"自动: {time_reason}")
-                    time.sleep(300); continue
+                # 交易时间过滤 (已关闭)
+                # time_ok, time_reason = is_trade_time_allowed(self.params)
+                # if not time_ok:
+                #     self.log(f"自动: {time_reason}")
+                #     time.sleep(300); continue
 
                 # 获取引擎信号 (含组加权信号)
                 ml_data = getattr(self, '_cached_ml', None)
@@ -820,8 +820,12 @@ class MainWindow(QMainWindow):
                     if not passed:
                         self.log(f"自动: 开多风控未通过: {reason}")
                         time.sleep(60); continue
-                    hmm_s = get_hmm_state().get("state",-1)
-                    if hmm_s == 2:
+                    # 通过 _cached_filter_info 获取 HMM 状态
+                    hmm_s = -1
+                    fi = getattr(self, '_cached_filter_info', {})
+                    if fi:
+                        hmm_s = fi.get("hmm_state", -1)
+                    if hmm_s == 2:  # 高波回撤，不做多
                         self.log("自动: HMM高波回撤, 跳过开多")
                         time.sleep(60); continue
                     self.log(f"自动: 强看多{confidence:.0%}, 开多")
@@ -836,8 +840,12 @@ class MainWindow(QMainWindow):
                     if not passed:
                         self.log(f"自动: 开空风控未通过: {reason}")
                         time.sleep(60); continue
-                    hmm_s = get_hmm_state().get("state",-1)
-                    if hmm_s == 1:
+                    # 通过 _cached_filter_info 获取 HMM 状态
+                    hmm_s = -1
+                    fi = getattr(self, '_cached_filter_info', {})
+                    if fi:
+                        hmm_s = fi.get("hmm_state", -1)
+                    if hmm_s == 0:  # 强势趋势，不做空 (注意：原文是 hmm_s == 1，应该为 0)
                         self.log("自动: HMM强势趋势, 跳过开空")
                         time.sleep(60); continue
                     self.log(f"自动: 强看空{confidence:.0%}, 开空")

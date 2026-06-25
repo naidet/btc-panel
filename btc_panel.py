@@ -310,15 +310,15 @@ def fetch_dashboard_data(symbol: str, params: dict):
         if price > 0 and spread > 0:
             filter_info["spread_pct"] = spread / price * 100
 
-        # HMM状态
-        hmm = get_hmm_state()
-        filter_info["hmm_state"] = hmm.get("state", -1)
+        # HMM状态 (直接引用全局变量)
+        filter_info["hmm_state"] = _hmm_state.get("state", -1)
         filter_info["hmm_label"] = ""
-        if hmm.get("state") == 0:
+        state = _hmm_state.get("state")
+        if state == 0:
             filter_info["hmm_label"] = "强势趋势"
-        elif hmm.get("state") == 1:
+        elif state == 1:
             filter_info["hmm_label"] = "窄幅整理"
-        elif hmm.get("state") == 2:
+        elif state == 2:
             filter_info["hmm_label"] = "高波回撤"
 
         # 日盈亏
@@ -613,10 +613,9 @@ def check_risk_gates(symbol: str, side: str, params: dict) -> Tuple[bool, str]:
                 if atr > atr_avg * float(params.get("atr_spike_mult", 2.0)):
                     return False, f"ATR飙升{atr/atr_avg:.1f}x"
 
-    hmm = get_hmm_state()
-    if hmm["state"] == 2 and side == "BUY":
+    if _hmm_state.get("state") == 2 and side == "BUY":
         return False, "HMM高波回撤, 不做多"
-    if hmm["state"] == 0 and side == "SELL":
+    if _hmm_state.get("state") == 0 and side == "SELL":
         return False, "HMM强势趋势, 不做空"
     return True, ""
 
