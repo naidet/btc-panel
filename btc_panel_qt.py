@@ -610,11 +610,11 @@ class MainWindow(QMainWindow):
                 self.main_signal_reason.setText(reason)
                 
                 self.signals.log_msg.emit(f"✅ 主信号更新: [{icon}] {text}")
-
-            # 如果主信号没有设置，设置一个默认值
-            if self.sig_label.text() in ["- 等待数据...", ""]:
-                self.sig_label.setText("信号加载中...")
-                self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
+                
+                # 如果主信号没有设置，设置一个默认值
+                if self.sig_label.text() in ["- 等待数据...", ""]:
+                    self.sig_label.setText("信号加载中...")
+                    self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
             except Exception as e:
                 error_msg = f"信号计算错误: {e}"
                 self.signals.log_msg.emit(f"❌ {error_msg}")

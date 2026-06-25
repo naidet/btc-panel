@@ -1,8 +1,18 @@
 @echo off
-title BTC AI 交易面板
-cd /d "%~dp0"
-echo Starting Data Bridge...
-start "" "C:\Users\82682\.workbuddy\binaries\python\versions\3.13.12\pythonw.exe" "%~dp0data_bridge.py"
-timeout /t 2 /nobreak >nul
-echo Starting Trading Panel...
-start "" "C:\Users\82682\.workbuddy\binaries\python\versions\3.13.12\pythonw.exe" "%~dp0btc_panel.py"
+chcp 65001 >nul
+echo 正在启动 BTC AI 交易面板...
+echo.
+
+cd /d "D:\BTC"
+
+python btc_panel_qt.py
+
+if %errorlevel% neq 0 (
+    echo.
+    echo 面板启动失败，错误代码: %errorlevel%
+    pause
+) else (
+    echo.
+    echo 面板已正常关闭
+    pause
+)

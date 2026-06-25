@@ -1,0 +1,12 @@
+{
+  "ema": 20,
+  "rsi_lo": 55,
+  "rsi_hi": 60,
+  "rsi_sl": 30,
+  "rsi_sh": 45,
+  "trades": 1371,
+  "wr": 54.6,
+  "pnl": 18.0,
+  "density": 271.0,
+  "score": 0.0
+}

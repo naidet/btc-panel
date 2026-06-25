@@ -1,0 +1,13 @@
+{
+  "trades": 869,
+  "wins": 228,
+  "losses": 641,
+  "win_rate": 26.2,
+  "total_pnl": -678200.0,
+  "models": [
+    "1h",
+    "4h",
+    "1d",
+    "30m"
+  ]
+}

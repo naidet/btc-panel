@@ -1,0 +1,49 @@
+{
+  "generated": "2026-06-22",
+  "4h_data": "2025-06-21 ~ 2026-06-22 (2200根)",
+  "4h_results": [
+    {
+      "strategy": "H4 EMA20 趋势跟踪",
+      "pnl": 95.29,
+      "return_pct": 0.95,
+      "trades": 768,
+      "win_rate": 69.0,
+      "max_dd": 5.09
+    },
+    {
+      "strategy": "H4 EMA Ribbon 排列 + ADX",
+      "pnl": 352.46,
+      "return_pct": 3.52,
+      "trades": 456,
+      "win_rate": 71.5,
+      "max_dd": 2.96
+    },
+    {
+      "strategy": "日线均值回归",
+      "pnl": 51.24,
+      "return_pct": 0.51,
+      "trades": 30,
+      "win_rate": 83.3,
+      "max_dd": 0.63
+    },
+    {
+      "strategy": "RSI+EMA 共振",
+      "pnl": 63.11,
+      "return_pct": 0.63,
+      "trades": 795,
+      "win_rate": 66.5,
+      "max_dd": 4.22
+    }
+  ],
+  "recommendation": {
+    "strategy": "EMARibbon ADX>18",
+    "annual_pnl": 356.97,
+    "annual_return_pct": 3.57,
+    "net_after_commission": -94.03,
+    "trades": 451,
+    "win_rate": 71.0,
+    "max_dd": 2.95,
+    "profit_factor": 1.12,
+    "sharpe": 0.7
+  }
+}

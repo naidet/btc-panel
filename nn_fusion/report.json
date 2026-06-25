@@ -1,0 +1,12 @@
+{
+  "method": "stacking",
+  "base_models": [
+    "1h",
+    "4h",
+    "1d",
+    "30m"
+  ],
+  "train_samples": 2446,
+  "test_samples": 3144,
+  "note": "\u6240\u6709\u57fa\u7840\u6a21\u578b\u7cbe\u5ea6~51%, \u878d\u5408\u65e0\u6cd5\u6539\u5584"
+}

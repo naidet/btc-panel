@@ -1,0 +1,15 @@
+{
+  "features": 11,
+  "samples": 3888,
+  "phases": {
+    "bear": 377,
+    "transition": 344,
+    "bull": 427,
+    "test": 538,
+    "pre": 2202
+  },
+  "accuracy_all": 49.6,
+  "trades": 55,
+  "win_rate": 45.5,
+  "pnl": -13900.0
+}

@@ -1,0 +1,152 @@
+{
+  "4h": [
+    {
+      "strategy": "H4 EMA20 趋势跟踪",
+      "total_pnl": 95.29,
+      "total_pnl_pct": 0.95,
+      "trades": 767,
+      "win_rate": 69.1,
+      "max_dd": 5.09,
+      "profit_factor": 1.02,
+      "sharpe": 0.11,
+      "avg_win": 9.91,
+      "avg_loss": 21.76
+    },
+    {
+      "strategy": "H4 EMA Ribbon 排列 + ADX",
+      "total_pnl": 352.46,
+      "total_pnl_pct": 3.52,
+      "trades": 456,
+      "win_rate": 71.5,
+      "max_dd": 2.96,
+      "profit_factor": 1.11,
+      "sharpe": 0.69,
+      "avg_win": 10.5,
+      "avg_loss": 23.62
+    },
+    {
+      "strategy": "日线均值回归",
+      "total_pnl": 51.24,
+      "total_pnl_pct": 0.51,
+      "trades": 30,
+      "win_rate": 83.3,
+      "max_dd": 0.63,
+      "profit_factor": 1.45,
+      "sharpe": 2.16,
+      "avg_win": 6.56,
+      "avg_loss": 22.56
+    },
+    {
+      "strategy": "RSI+EMA 共振",
+      "total_pnl": 63.11,
+      "total_pnl_pct": 0.63,
+      "trades": 796,
+      "win_rate": 66.5,
+      "max_dd": 4.22,
+      "profit_factor": 1.01,
+      "sharpe": 0.08,
+      "avg_win": 9.5,
+      "avg_loss": 18.66
+    }
+  ],
+  "1d": [
+    {
+      "strategy": "H4 EMA20 趋势跟踪",
+      "total_pnl": 202.56,
+      "total_pnl_pct": 2.03,
+      "trades": 128,
+      "win_rate": 77.3,
+      "max_dd": 2.28,
+      "profit_factor": 1.14,
+      "sharpe": 0.76,
+      "avg_win": 17.12,
+      "avg_loss": 51.47
+    },
+    {
+      "strategy": "H4 EMA Ribbon 排列 + ADX",
+      "total_pnl": 16.68,
+      "total_pnl_pct": 0.17,
+      "trades": 67,
+      "win_rate": 76.1,
+      "max_dd": 3.23,
+      "profit_factor": 1.02,
+      "sharpe": 0.1,
+      "avg_win": 19.42,
+      "avg_loss": 60.85
+    },
+    {
+      "strategy": "日线均值回归",
+      "total_pnl": 45.17,
+      "total_pnl_pct": 0.45,
+      "trades": 16,
+      "win_rate": 87.5,
+      "max_dd": 0.69,
+      "profit_factor": 1.46,
+      "sharpe": 2.11,
+      "avg_win": 10.31,
+      "avg_loss": 49.61
+    },
+    {
+      "strategy": "RSI+EMA 共振",
+      "total_pnl": 296.69,
+      "total_pnl_pct": 2.97,
+      "trades": 127,
+      "win_rate": 78.0,
+      "max_dd": 1.67,
+      "profit_factor": 1.24,
+      "sharpe": 1.32,
+      "avg_win": 15.33,
+      "avg_loss": 43.6
+    }
+  ],
+  "1h": [
+    {
+      "strategy": "H4 EMA20 趋势跟踪",
+      "total_pnl": -77.37,
+      "total_pnl_pct": -0.77,
+      "trades": 342,
+      "win_rate": 68.1,
+      "max_dd": 3.1,
+      "profit_factor": 0.97,
+      "sharpe": -0.21,
+      "avg_win": 10.04,
+      "avg_loss": 22.37
+    },
+    {
+      "strategy": "H4 EMA Ribbon 排列 + ADX",
+      "total_pnl": 176.84,
+      "total_pnl_pct": 1.77,
+      "trades": 238,
+      "win_rate": 72.7,
+      "max_dd": 1.8,
+      "profit_factor": 1.11,
+      "sharpe": 0.71,
+      "avg_win": 10.12,
+      "avg_loss": 24.2
+    },
+    {
+      "strategy": "日线均值回归",
+      "total_pnl": 0,
+      "total_pnl_pct": 0.0,
+      "trades": 0,
+      "win_rate": 0,
+      "max_dd": 0,
+      "profit_factor": Infinity,
+      "sharpe": 0.0,
+      "avg_win": 0,
+      "avg_loss": 0
+    },
+    {
+      "strategy": "RSI+EMA 共振",
+      "total_pnl": -209.76,
+      "total_pnl_pct": -2.1,
+      "trades": 359,
+      "win_rate": 64.9,
+      "max_dd": 3.83,
+      "profit_factor": 0.91,
+      "sharpe": -0.57,
+      "avg_win": 9.66,
+      "avg_loss": 19.52
+    }
+  ]
+}
