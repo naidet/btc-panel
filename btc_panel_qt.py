@@ -647,124 +647,133 @@ class MainWindow(QMainWindow):
                 pass  # tooltips via menu items
 
     def _auto_trade_loop(self):
+        """自动交易主循环 (不手动管理MT5连接, 由btc_panel内部管理)"""
         _last_trade_time = datetime(2000,1,1)
-        _entry = 0; _trail = 0; _peak_profit = 0
-        _last_trail_mod = 0; _last_trail_price = 0
+        _peak_profit = 0.0
+        _last_trail_mod = 0
+        _last_trail_price = 0.0
         while self.auto_enabled:
             try:
                 now = datetime.now()
-                # 每轮都从文件重新加载参数, 改参数不用重启
                 self.params = load_params()
                 thresh = int(self.params.get("resonance_threshold",2))
                 cooldown = int(self.params.get("cooldown_minutes",5))
-                max_daily = float(self.params.get("max_daily_loss",300))
-                dd_max = float(self.params.get("max_drawdown_pct",30))
-                atr_spike = float(self.params.get("atr_spike_mult",2))
-                spread_max = float(self.params.get("max_spread_pct",0.3))
-                tp_atr = float(self.params.get("tp_atr_mult",2))
-                sl_atr = float(self.params.get("sl_atr_mult",1.5))
-                tp_min = float(self.params.get("tp_min",25))
-                sl_min = float(self.params.get("sl_min",12))
                 profit_lock_trigger = float(self.params.get("profit_lock_trigger",5))
-                profit_lock_pullback = float(self.params.get("profit_lock_pullback",20))
+                profit_lock_pullback = float(self.params.get("profit_lock_pullback",30))
+                trail_dist_points = float(self.params.get("trail_dist",300))
 
-                daily = get_daily_pnl(self._cached_data.get("balance", 0))
-                if daily.get("pnl", 0) <= -max_daily:
-                    self.log(f"自动: 日亏${abs(daily['pnl']):.0f} >= ${max_daily}, 暂停"); time.sleep(300); continue
+                # 日亏检查
+                daily = get_daily_pnl()
+                max_daily = float(self.params.get("max_daily_loss",100))
+                if daily.get("pnl",0) <= -abs(max_daily):
+                    self.log(f"自动: 日亏${abs(daily['pnl']):.0f} >= ${max_daily}, 暂停5分钟")
+                    time.sleep(300); continue
 
-                if not _mt5_lock.acquire(timeout=10): time.sleep(5); continue
-                has_position = False
-                try:
-                    if not mt5.initialize(path=MT5_PATH):
-                        time.sleep(5); continue
-                    mt5.symbol_select(self.symbol, True)
-                    tick = mt5.symbol_info_tick(self.symbol)
-                    if not tick: time.sleep(5); continue
-                    price = tick.bid or 0
+                # 获取报价和持仓 (通过btc_panel, 自动管理MT5)
+                tick, info = get_mt5_tick(self.symbol)
+                if not tick or not info:
+                    self.log("自动: 获取报价失败, 等待10秒")
+                    time.sleep(10); continue
+                price = tick.bid
 
-                    pos = mt5.positions_get(symbol=self.symbol)
-                    if pos and len(pos) > 0:
-                        has_position = True
-                        p = pos[0]; current_sl = p.sl or 0; current_tp = p.tp or 0
-                        pnl = p.profit; side = "BUY" if p.type==0 else "SELL"
+                positions = get_mt5_positions(self.symbol)
+                has_position = positions and len(positions) > 0
 
-                        # 盈利回撤保护 (跟踪峰值, 回落百分比触发平仓)
-                        if pnl > _peak_profit:
-                            _peak_profit = pnl
-                        if _peak_profit > profit_lock_trigger:
-                            pullback_pct = (_peak_profit - pnl) / _peak_profit * 100 if _peak_profit > 0 else 0
-                            if pullback_pct >= profit_lock_pullback:
-                                self.log(f"自动: 利润峰值${_peak_profit:.1f} 回落{pullback_pct:.0f}%, 平仓")
-                                execute_trade("CLOSE", self.symbol)
-                                _last_trade_time = now; _peak_profit = 0
-
-                        # 移动止损 (tr_dist单位: 点数)
-                        now_ts = time.time()
-                        if now_ts - _last_trail_mod >= 60:
-                            tr_dist_points = float(self.params.get("trail_dist", 200))
-                            # 获取point值用于点数→价格转换
-                            info = mt5.symbol_info(self.symbol)
-                            point = info.point if info else 0.00001
-                            if side=="BUY":
-                                new_sl = price - tr_dist_points * point
-                                if new_sl > current_sl + 50*point and abs(new_sl - _last_trail_price) > 20*point:
-                                    _last_trail_price = new_sl; _last_trail_mod = now_ts
-                                    threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
-                            else:
-                                new_sl = price + tr_dist_points * point
-                                if current_sl==0 or new_sl < current_sl - 50*point:
-                                    if abs(new_sl - _last_trail_price) > 20*point:
-                                        _last_trail_price = new_sl; _last_trail_mod = now_ts
-                                        threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
-                finally:
-                    try: mt5.shutdown()
-                    except: pass
-                    try: _mt5_lock.release()
-                    except: pass
-
+                # 有持仓: 监控移动止损和盈利回撤
                 if has_position:
+                    p = positions[0]
+                    current_sl = p.sl or 0
+                    pnl = p.profit
+                    side = "BUY" if p.type == 0 else "SELL"
+
+                    # 盈利回撤保护
+                    if pnl > _peak_profit:
+                        _peak_profit = pnl
+                    if _peak_profit > profit_lock_trigger:
+                        pullback_pct = (_peak_profit - pnl) / _peak_profit * 100 if _peak_profit > 0 else 0
+                        if pullback_pct >= profit_lock_pullback:
+                            self.log(f"自动: 利润峰值${_peak_profit:.1f} 回落{pullback_pct:.0f}%, 平仓")
+                            execute_trade("CLOSE", self.symbol, self.params)
+                            _last_trade_time = now
+                            _peak_profit = 0.0
+
+                    # 移动止损 (每60秒检查一次)
+                    now_ts = time.time()
+                    if now_ts - _last_trail_mod >= 60 and pnl > 0:
+                        point = info.point
+                        tr_dist_price = trail_dist_points * point
+                        if side == "BUY":
+                            new_sl = price - tr_dist_price
+                            if new_sl > current_sl + 50*point and abs(new_sl - _last_trail_price) > 20*point:
+                                _last_trail_price = new_sl
+                                _last_trail_mod = now_ts
+                                threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
+                        else:
+                            new_sl = price + tr_dist_price
+                            if current_sl == 0 or new_sl < current_sl - 50*point:
+                                if abs(new_sl - _last_trail_price) > 20*point:
+                                    _last_trail_price = new_sl
+                                    _last_trail_mod = now_ts
+                                    threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
+
                     time.sleep(60); continue
 
-                # 无持仓，检查信号开仓
+                # 无持仓: 检查信号开仓
                 if (now - _last_trade_time).total_seconds() < cooldown*60:
                     time.sleep(30); continue
 
-                # 交易时间过滤（过夜费保护）
+                # 交易时间过滤
                 time_ok, time_reason = is_trade_time_allowed(self.params)
                 if not time_ok:
-                    self.log(f"自动: {time_reason}"); time.sleep(300); continue
+                    self.log(f"自动: {time_reason}")
+                    time.sleep(300); continue
 
-                # 风控闸门检查 (开仓前必做)
+                # 获取共振信号
                 res = getattr(self, '_cached_resonance', None)
-                if not res: time.sleep(30); continue
+                if not res:
+                    time.sleep(30); continue
 
-                buys = sum(1 for r in res if r.get("signal")==1)
-                sells = sum(1 for r in res if r.get("signal")==-1)
+                buys = sum(1 for r in res if r.get("signal") == 1)
+                sells = sum(1 for r in res if r.get("signal") == -1)
 
                 if buys >= thresh:
-                    # 风控检查
                     passed, reason = check_risk_gates(self.symbol, "BUY", self.params)
                     if not passed:
-                        self.log(f"自动: 开多风控未通过: {reason}"); time.sleep(60); continue
-                    hmm_s = self._hmm_state.get("state",-1)
-                    if self.symbol in self._hmm_symbols and hmm_s == 2:
-                        self.log("自动: HMM高波回撤, 跳过开多"); time.sleep(60); continue
+                        self.log(f"自动: 开多风控未通过: {reason}")
+                        time.sleep(60); continue
+                    hmm_s = get_hmm_state().get("state",-1)
+                    if self.symbol in SYMBOL_PARAMS and hmm_s == 2:
+                        self.log("自动: HMM高波回撤, 跳过开多")
+                        time.sleep(60); continue
                     self.log(f"自动: 共振{buys}/3看涨, 开多")
-                    execute_trade("BUY", self.symbol); _last_trade_time = now
+                    result = execute_trade("BUY", self.symbol, self.params)
+                    self.log(f"自动: {result.get('msg','')}")
+                    if result.get("ok"):
+                        _last_trade_time = now
+                        _peak_profit = 0.0
+
                 elif sells >= thresh:
                     passed, reason = check_risk_gates(self.symbol, "SELL", self.params)
                     if not passed:
-                        self.log(f"自动: 开空风控未通过: {reason}"); time.sleep(60); continue
-                    hmm_s = self._hmm_state.get("state",-1)
-                    if self.symbol in self._hmm_symbols and hmm_s == 1:
-                        self.log("自动: HMM强势趋势, 跳过开空"); time.sleep(60); continue
+                        self.log(f"自动: 开空风控未通过: {reason}")
+                        time.sleep(60); continue
+                    hmm_s = get_hmm_state().get("state",-1)
+                    if self.symbol in SYMBOL_PARAMS and hmm_s == 1:
+                        self.log("自动: HMM强势趋势, 跳过开空")
+                        time.sleep(60); continue
                     self.log(f"自动: 共振{sells}/3看跌, 开空")
-                    execute_trade("SELL", self.symbol); _last_trade_time = now
+                    result = execute_trade("SELL", self.symbol, self.params)
+                    self.log(f"自动: {result.get('msg','')}")
+                    if result.get("ok"):
+                        _last_trade_time = now
+                        _peak_profit = 0.0
 
                 time.sleep(120)
-            except Exception as e:
-                self.log(f"自动异常: {e}"); time.sleep(30)
-
+            except Exception as loop_err:
+                try:
+                    self.log(f"自动: 循环异常: {loop_err}")
+                except: pass
+                time.sleep(30)
     def _modify_sl(self, ticket, new_sl):
         try:
             if not _mt5_lock.acquire(timeout=5): return
