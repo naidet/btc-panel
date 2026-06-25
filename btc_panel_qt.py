@@ -203,23 +203,32 @@ class MainWindow(QMainWindow):
             self.bal_frame.layout().addWidget(w)
         pr.addWidget(self.bal_frame, 2); ml.addLayout(pr)
 
-        # 合并版信号卡 (实时信号 + 主信号)
-        sig_card = self._make_card("实时信号 (含主信号)")
+        # 合并版信号卡 (实时信号 + 主信号 + HMM)
+        sig_card = self._make_card("实时信号")
         slayout = QVBoxLayout(sig_card); slayout.setSpacing(8)
         
-        # 第一行: 大号主信号
+        # 第一行: 大号主信号 + HMM标签
         sig_row1 = QHBoxLayout()
         self.main_signal_icon = QLabel("◆"); self.main_signal_icon.setStyleSheet("font-size: 24px; font-weight: bold; color: #e0e0e0;")
         sig_row1.addWidget(self.main_signal_icon)
         self.sig_label = QLabel("- 等待数据..."); self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
         sig_row1.addWidget(self.sig_label, 1)
+        
+        # HMM标签 (右边显示)
+        self.hmm_label = QLabel("HMM: 加载中..."); self.hmm_label.setStyleSheet("color: #c0c0cc; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #2a2a44;")
+        sig_row1.addWidget(self.hmm_label)
         slayout.addLayout(sig_row1)
         
-        # 第二行: 信号条 + 详细标签
+        # 第二行: 信号条 + HMM信息
+        sig_row2 = QHBoxLayout()
         self.sig_bar = SignalBar(); self.sig_bar.setFixedHeight(32)
-        slayout.addWidget(self.sig_bar)
+        sig_row2.addWidget(self.sig_bar, 1)
         
-        # 第三行: 共振/HMM/引擎信息
+        self.hmm_conf = QLabel(""); self.hmm_conf.setStyleSheet("color: #7a7a9e; font-size: 11px; padding: 2px 8px;")
+        sig_row2.addWidget(self.hmm_conf)
+        slayout.addLayout(sig_row2)
+        
+        # 第三行: 共振/引擎/组信号信息
         self.sig_text = QLabel("共振: -/-  |  引擎: ~"); self.sig_text.setStyleSheet("color: #7a7a9e; font-size: 13px;")
         slayout.addWidget(self.sig_text)
         
@@ -229,14 +238,6 @@ class MainWindow(QMainWindow):
         
         ml.addWidget(sig_card)
         self.sig_frame = sig_card
-
-        hf = QFrame(); hf.setStyleSheet(f"background: {CARD}; border-radius: 6px; padding: 8px 12px;")
-        hr = QHBoxLayout(hf); hr.setContentsMargins(0,0,0,0)
-        ic = QLabel("🧠"); ic.setStyleSheet("font-size: 18px;"); hr.addWidget(ic)
-        self.hmm_label = QLabel("HMM: 加载中..."); self.hmm_label.setStyleSheet("color: #c0c0cc; font-size: 12px;")
-        hr.addWidget(self.hmm_label); hr.addStretch()
-        self.hmm_conf = QLabel(""); self.hmm_conf.setStyleSheet("color: #7a7a9e; font-size: 12px;")
-        hr.addWidget(self.hmm_conf); ml.addWidget(hf); self.hmm_frame = hf
 
         # 合并到实时信号卡中，移除冗余主信号区域
         # 实时信号卡增加主信号信息显示
@@ -620,7 +621,7 @@ class MainWindow(QMainWindow):
 
             self.sig_bar.set_value(bar_val if bar_dir==1 else -bar_val, bar_clr, bar_text)
 
-            # HMM
+            # HMM (现在合并到信号卡第一行)
             hmm = self._hmm_state
             if hmm and hmm["state"] >= 0:
                 hl = hmm["label"]; hc = hmm["confidence"]
@@ -628,11 +629,12 @@ class MainWindow(QMainWindow):
                 c = cols.get(hl,"#7a7a9e")
                 durable = 1/(1-hmm["self_prob"]) if hmm["self_prob"]<1 else 99
                 self.hmm_label.setText(f"HMM: {hl}")
-                self.hmm_label.setStyleSheet(f"color: {c}; font-size: 12px;")
+                self.hmm_label.setStyleSheet(f"color: {c}; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #2a2a44;")
                 self.hmm_conf.setText(f"置信度 {hc:.0%} | 预计持续 {durable:.0f}根H4")
-                self.hmm_frame.setVisible(True)
             else:
-                self.hmm_frame.setVisible(False)
+                self.hmm_label.setText("HMM: -")
+                self.hmm_label.setStyleSheet("color: #7a7a9e; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #2a2a44;")
+                self.hmm_conf.setText("")
 
             # 按钮
             if self._has_position:
