@@ -221,6 +221,8 @@ def fetch_dashboard_data(symbol: str, params: dict):
         pass
 
     # --- 2. 共振信号 ---
+    # name映射: 面板详情区用 "1h"/"4h"/"1d" 匹配 脉冲层/谐波段/基频面
+    _TF_NAME_MAP = {"M5": "1h", "M15": "1h", "H1": "1h", "H4": "4h", "D1": "1d"}
     resonance = []
     try:
         raw_bars = fetch_all_mt5_data(symbol, include_h1=True)
@@ -231,6 +233,7 @@ def fetch_dashboard_data(symbol: str, params: dict):
                 sig = calc_signal(raw_bars[tf], params)
                 resonance.append({
                     "timeframe": tf,
+                    "name": _TF_NAME_MAP.get(tf, tf),   # 面板详情匹配用
                     "signal": sig["signal"],
                     "strength": sig["strength"],
                     "reasons": sig.get("reasons", []),
