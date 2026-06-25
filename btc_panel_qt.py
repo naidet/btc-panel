@@ -221,14 +221,25 @@ class MainWindow(QMainWindow):
         hr.addWidget(self.hmm_conf); ml.addWidget(hf); self.hmm_frame = hf
 
         # 主信号 (手工开仓参考)
-        main_frame = QFrame(); main_frame.setStyleSheet(f"background: {CARD}; border-radius: 6px; padding: 12px; border: 2px solid #333366;")
-        ml2 = QVBoxLayout(main_frame); ml2.setSpacing(6)
-        self.main_signal_icon = QLabel("◆"); self.main_signal_icon.setStyleSheet("font-size: 32px; font-weight: bold;")
-        self.main_signal_text = QLabel("主信号加载中..."); self.main_signal_text.setStyleSheet("font-size: 16px; font-weight: bold; color: #e0e0e0;")
-        self.main_signal_reason = QLabel(""); self.main_signal_reason.setStyleSheet("font-size: 12px; color: #7a7a9e;")
-        ml2.addWidget(self.main_signal_icon, 0, Qt.AlignCenter)
-        ml2.addWidget(self.main_signal_text, 0, Qt.AlignCenter)
-        ml2.addWidget(self.main_signal_reason, 0, Qt.AlignCenter)
+        main_frame = QFrame(); main_frame.setStyleSheet(f"background: {CARD}; border-radius: 6px; padding: 8px 12px; margin: 0px;")
+        ml2 = QHBoxLayout(main_frame); ml2.setContentsMargins(0,0,0,0); ml2.setSpacing(10)
+        
+        # 图标区域
+        icon_frame = QFrame(); icon_frame.setStyleSheet("background: #222244; border-radius: 4px; padding: 6px 10px;")
+        icon_layout = QVBoxLayout(icon_frame); icon_layout.setContentsMargins(0,0,0,0)
+        self.main_signal_icon = QLabel("◆"); self.main_signal_icon.setStyleSheet("font-size: 24px; font-weight: bold; color: #e0e0e0;")
+        icon_layout.addWidget(self.main_signal_icon, 0, Qt.AlignCenter)
+        ml2.addWidget(icon_frame)
+        
+        # 文字区域
+        text_frame = QFrame(); text_frame.setStyleSheet("background: transparent;")
+        text_layout = QVBoxLayout(text_frame); text_layout.setContentsMargins(0,0,0,0); text_layout.setSpacing(2)
+        self.main_signal_text = QLabel("主信号加载中..."); self.main_signal_text.setStyleSheet("font-size: 14px; font-weight: bold; color: #e0e0e0;")
+        self.main_signal_reason = QLabel(""); self.main_signal_reason.setStyleSheet("font-size: 11px; color: #7a7a9e;")
+        text_layout.addWidget(self.main_signal_text)
+        text_layout.addWidget(self.main_signal_reason)
+        ml2.addWidget(text_frame, 1)
+        
         ml.addWidget(main_frame)
 
         self.detail_frame = QFrame(); self.detail_frame.setVisible(False)
@@ -587,9 +598,9 @@ class MainWindow(QMainWindow):
                     color = GRAY
                 
                 self.main_signal_icon.setText(icon)
-                self.main_signal_icon.setStyleSheet(f"color: {color}; font-size: 32px; font-weight: bold;")
+                self.main_signal_icon.setStyleSheet(f"color: {color}; font-size: 24px; font-weight: bold;")
                 self.main_signal_text.setText(text)
-                self.main_signal_text.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: bold;")
+                self.main_signal_text.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: bold;")
                 self.main_signal_reason.setText(reason)
             except Exception as e:
                 self.main_signal_icon.setText("?"); self.main_signal_text.setText("信号计算错误"); self.main_signal_reason.setText(str(e)[:60])
