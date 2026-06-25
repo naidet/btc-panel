@@ -176,6 +176,119 @@ def fetch_all_mt5_data(symbol: str, include_h1: bool = True) -> Optional[dict]:
         except:
             return None
 
+
+def fetch_dashboard_data(symbol: str, params: dict):
+    """
+    面板全能数据获取 — 一次调用返回面板所需的全部数据
+    返回: (data_dict, ml_dict, resonance_list, filter_info_dict)
+
+    data_dict 包含: price, ask, bid, position, balance, equity, broker, login
+    ml_dict 包含:   signal, ready, confidence (简化版ML信号, 基于共振聚合)
+    resonance_list: 多时间框架共振信号列表
+    filter_info:    风控过滤信息
+    """
+    # --- 1. 基础数据 (价格/账户/持仓) ---
+    data = {}
+    try:
+        tick, info = get_mt5_tick(symbol)
+        if tick and info:
+            data["price"] = tick.bid
+            data["ask"] = tick.ask
+            data["bid"] = tick.bid
+            data["spread"] = tick.ask - tick.bid
+
+        acct = get_mt5_account_info()
+        if acct:
+            data["balance"] = acct.get("balance", 0)
+            data["equity"] = acct.get("equity", 0)
+            data["broker"] = acct.get("server", "")
+            data["login"] = str(acct.get("login", ""))
+
+        positions = get_mt5_positions(symbol)
+        if positions:
+            p = positions[0]
+            side = "多" if p.type == 0 else "空"
+            data["position"] = {
+                "side": side,
+                "entry": p.price_open,
+                "volume": p.volume,
+                "profit": p.profit,
+                "ticket": p.ticket,
+            }
+        else:
+            data["position"] = None
+    except Exception:
+        pass
+
+    # --- 2. 共振信号 ---
+    resonance = []
+    try:
+        raw_bars = fetch_all_mt5_data(symbol, include_h1=True)
+        if raw_bars:
+            for tf in ["M5", "M15", "H1", "H4", "D1"]:
+                if tf not in raw_bars:
+                    continue
+                sig = calc_signal(raw_bars[tf], params)
+                resonance.append({
+                    "timeframe": tf,
+                    "signal": sig["signal"],
+                    "strength": sig["strength"],
+                    "reasons": sig.get("reasons", []),
+                    "rsi": sig.get("rsi", 50),
+                    "adx": sig.get("adx", 0),
+                    "atr": sig.get("atr", 0),
+                })
+    except Exception:
+        pass
+
+    # --- 3. ML引擎信号 (基于共振聚合) ---
+    ml = {"signal": 0, "ready": False, "confidence": 0.0}
+    try:
+        if resonance and len(resonance) >= 3:
+            buys = sum(1 for r in resonance if r["signal"] == 1)
+            sells = sum(1 for r in resonance if r["signal"] == -1)
+            total = len(resonance)
+            if buys > sells:
+                ml["signal"] = 1
+                ml["confidence"] = buys / total
+            elif sells > buys:
+                ml["signal"] = -1
+                ml["confidence"] = sells / total
+            ml["ready"] = True
+    except Exception:
+        pass
+
+    # --- 4. 过滤信息 ---
+    filter_info = {}
+    try:
+        # 点差检查
+        spread = data.get("spread", 0)
+        price = data.get("price", 1)
+        if price > 0 and spread > 0:
+            filter_info["spread_pct"] = spread / price * 100
+
+        # HMM状态
+        hmm = get_hmm_state()
+        filter_info["hmm_state"] = hmm.get("state", -1)
+        filter_info["hmm_label"] = ""
+        if hmm.get("state") == 0:
+            filter_info["hmm_label"] = "强势趋势"
+        elif hmm.get("state") == 1:
+            filter_info["hmm_label"] = "窄幅整理"
+        elif hmm.get("state") == 2:
+            filter_info["hmm_label"] = "高波回撤"
+
+        # 日盈亏
+        daily = get_daily_pnl()
+        filter_info["daily_pnl"] = daily.get("pnl", 0)
+
+        # 更新HMM状态
+        update_hmm_state(symbol)
+    except Exception:
+        pass
+
+    return data, ml, resonance, filter_info
+
 def get_mt5_account_info() -> Optional[dict]:
     with _mt5_lock:
         if not mt5_ensure():

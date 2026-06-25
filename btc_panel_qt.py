@@ -20,7 +20,8 @@ from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, QRect
 from PySide6.QtGui import QFont, QColor, QPalette, QAction, QIcon, QPainter, QBrush, QPen
 
 from btc_panel import (
-    execute_trade, fetch_all_mt5_data, check_risk_gates, get_daily_pnl,
+    execute_trade, fetch_all_mt5_data, fetch_dashboard_data, check_risk_gates, get_daily_pnl,
+    get_mt5_tick, get_mt5_positions, get_mt5_account_info, get_hmm_state,
     _mt5_lock, MT5_PATH, DEFAULT_PARAMS, load_params, save_params,
     SYMBOLS, SYMBOL_NAMES, SYMBOL_PARAMS,
     is_trade_time_allowed,
@@ -456,7 +457,7 @@ class MainWindow(QMainWindow):
 
     def _fetch_and_update(self):
         try:
-            data, ml, resonance, filter_info = fetch_all_mt5_data(self.params, self.symbol)
+            data, ml, resonance, filter_info = fetch_dashboard_data(self.symbol, self.params)
             if self.symbol in self._hmm_symbols:
                 try:
                     from hmm_state import predict_current_state
@@ -510,7 +511,7 @@ class MainWindow(QMainWindow):
             if broker: self.broker_label.setText(f"券商: {broker}")
             if login: self.login_label.setText(f"账号: {login}")
 
-            if data.get("balance"): self.signals.update_risk.emit(get_daily_pnl(data["balance"]))
+            if data.get("balance"): self.signals.update_risk.emit(get_daily_pnl())
 
             rd = resonance if resonance and len(resonance)>0 else self._cached_resonance or []
             buys = sum(1 for r in rd if r.get("signal")==1); sells = sum(1 for r in rd if r.get("signal")==-1)
