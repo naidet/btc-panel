@@ -69,8 +69,6 @@ DEFAULT_PARAMS = {
     "max_spread_pct": 0.15,
     "cooldown_minutes": 30,
     "volatility_filter": True,
-    "no_trade_after_hour": 22,
-    "no_trade_before_hour": 0,
 }
 
 # ============================================================
@@ -454,8 +452,138 @@ def update_hmm_state(symbol: str):
     else:
         _hmm_state = {"state": 1, "confidence": 0.6, "expected_duration": 20}
 
-def get_hmm_state() -> dict:
-    return dict(_hmm_state)
+def get_trade_signal(symbol: str, params: dict) -> dict:
+    """
+    综合交易信号（供手工开仓参考）
+    返回: {
+        "direction": 1(做多) / -1(做空) / 0(观望),
+        "strength": "强烈" / "中等" / "弱",
+        "confidence": 0.0~1.0,
+        "reason": "文本描述",
+        "components": {  # 各组件信号
+            "base": 1/-1/0,
+            "harmonic": 1/-1/0, 
+            "pulse": 1/-1/0,
+            "hmm": 1/-1/0,
+            "atr_filter": bool,
+            "daily_filter": bool
+        }
+    }
+    """
+    try:
+        data, ml, resonance, filter_info = fetch_dashboard_data(symbol, params)
+        hmm_state = filter_info.get("hmm_state", -1)
+        
+        # 1. 解析组件信号
+        group_sigs = ml.get("group_signals", {})
+        base_sig = group_sigs.get("基频面", 0)      # 长期
+        harmonic_sig = group_sigs.get("谐波段", 0)   # 中期
+        pulse_sig = group_sigs.get("脉冲层", 0)      # 短期
+        
+        # 2. HMM信号转换 (状态->方向)
+        hmm_sig = 0
+        if hmm_state == 0:  # 强势趋势 → 做多
+            hmm_sig = 1
+        elif hmm_state == 2:  # 高波回撤 → 做空
+            hmm_sig = -1
+        
+        # 3. 加权决策（基频面权重最高）
+        weighted = {"BUY": 0.0, "SELL": 0.0}
+        if base_sig == 1:
+            weighted["BUY"] += 2.5
+        elif base_sig == -1:
+            weighted["SELL"] += 2.5
+            
+        if harmonic_sig == 1:
+            weighted["BUY"] += 2.0
+        elif harmonic_sig == -1:
+            weighted["SELL"] += 2.0
+            
+        if pulse_sig == 1:
+            weighted["BUY"] += 1.0
+        elif pulse_sig == -1:
+            weighted["SELL"] += 1.0
+            
+        if hmm_sig == 1:
+            weighted["BUY"] += 1.5
+        elif hmm_sig == -1:
+            weighted["SELL"] += 1.5
+        
+        # 4. 决策 (基频面+谐波段同向就足够强)
+        direction = 0
+        confidence = 0.0
+        strength = "弱"
+        
+        # 如果基频面和谐波段同向，那就是强烈信号
+        if base_sig == harmonic_sig and base_sig != 0:
+            direction = base_sig
+            confidence = 0.8  # 基频+谐波同向就是80%置信度
+        # 否则用加权总分≥3.0（更宽松）
+        elif weighted["BUY"] >= 3.0 and weighted["BUY"] > weighted["SELL"]:
+            direction = 1
+            confidence = weighted["BUY"] / (weighted["BUY"] + weighted["SELL"])
+        elif weighted["SELL"] >= 3.0 and weighted["SELL"] > weighted["BUY"]:
+            direction = -1
+            confidence = weighted["SELL"] / (weighted["SELL"] + weighted["BUY"])
+        
+        # 5. 强度判定
+        if confidence >= 0.75:
+            strength = "强烈"
+        elif confidence >= 0.6:
+            strength = "中等"
+        elif confidence > 0:
+            strength = "弱"
+        
+        # 6. 理由构建
+        reasons = []
+        if base_sig == 1:
+            reasons.append("基频面看多")
+        elif base_sig == -1:
+            reasons.append("基频面看空")
+            
+        if harmonic_sig == 1:
+            reasons.append("谐波段看多")
+        elif harmonic_sig == -1:
+            reasons.append("谐波段看空")
+            
+        if pulse_sig == 1:
+            reasons.append("脉冲层看多")
+        elif pulse_sig == -1:
+            reasons.append("脉冲层看空")
+            
+        if hmm_sig == 1:
+            reasons.append("HMM强势趋势")
+        elif hmm_sig == -1:
+            reasons.append("HMM高波回撤")
+        
+        # 7. 过滤条件检查（供参考）
+        atr_ok = filter_info.get("spread_pct", 0) <= float(params.get("max_spread_pct", 0.15))
+        daily_ok = abs(filter_info.get("daily_pnl", 0)) < abs(float(params.get("max_daily_loss", 100)))
+        
+        return {
+            "direction": direction,
+            "strength": strength,
+            "confidence": confidence,
+            "reason": " + ".join(reasons) if reasons else "观望",
+            "components": {
+                "base": base_sig,
+                "harmonic": harmonic_sig,
+                "pulse": pulse_sig,
+                "hmm": hmm_sig,
+                "atr_filter": atr_ok,
+                "daily_filter": daily_ok
+            },
+            "weighted": weighted,
+            "raw_ml": ml
+        }
+    except Exception as e:
+        return {
+            "direction": 0,
+            "strength": "错误",
+            "confidence": 0.0,
+            "reason": f"计算错误: {e}",
+            "components": {}
+        }
 
 # ============================================================
 # 风险控制检查
@@ -648,13 +776,14 @@ def modify_sl(ticket: int, new_sl: float) -> bool:
 # 交易时间过滤
 # ============================================================
 def is_trade_time_allowed(params: dict) -> Tuple[bool, str]:
-    """检查当前是否在允许交易的时间段内"""
-    now = datetime.now()
-    after_hour = int(params.get("no_trade_after_hour", 22))
-    before_hour = int(params.get("no_trade_before_hour", 0))
-    current_hour = now.hour
-    if current_hour >= after_hour:
-        return False, f"已过{after_hour}点, 停止开仓(避免过夜费)"
-    if 0 < before_hour <= current_hour:
-        return False, f"未到{before_hour}点, 不允许开仓"
-    return True, ""
+    """检查当前是否在允许交易的时间段内 (已关闭时间限制)"""
+    # 注释掉原有的时间限制逻辑，永远允许交易
+    # now = datetime.now()
+    # after_hour = int(params.get("no_trade_after_hour", 22))
+    # before_hour = int(params.get("no_trade_before_hour", 0))
+    # current_hour = now.hour
+    # if current_hour >= after_hour:
+    #     return False, f"已过{after_hour}点, 停止开仓(避免过夜费)"
+    # if 0 < before_hour <= current_hour:
+    #     return False, f"未到{before_hour}点, 不允许开仓"
+    return True, "交易时间限制已关闭"

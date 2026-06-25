@@ -21,7 +21,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QAction, QIcon, QPainter, QBr
 
 from btc_panel import (
     execute_trade, fetch_all_mt5_data, fetch_dashboard_data, check_risk_gates, get_daily_pnl,
-    get_mt5_tick, get_mt5_positions, get_mt5_account_info, get_hmm_state,
+    get_mt5_tick, get_mt5_positions, get_mt5_account_info, get_hmm_state, get_trade_signal,
     _mt5_lock, MT5_PATH, DEFAULT_PARAMS, load_params, save_params,
     SYMBOLS, SYMBOL_NAMES, SYMBOL_PARAMS,
     is_trade_time_allowed,
@@ -220,6 +220,17 @@ class MainWindow(QMainWindow):
         self.hmm_conf = QLabel(""); self.hmm_conf.setStyleSheet("color: #7a7a9e; font-size: 12px;")
         hr.addWidget(self.hmm_conf); ml.addWidget(hf); self.hmm_frame = hf
 
+        # 主信号 (手工开仓参考)
+        main_frame = QFrame(); main_frame.setStyleSheet(f"background: {CARD}; border-radius: 6px; padding: 12px; border: 2px solid #333366;")
+        ml2 = QVBoxLayout(main_frame); ml2.setSpacing(6)
+        self.main_signal_icon = QLabel("◆"); self.main_signal_icon.setStyleSheet("font-size: 32px; font-weight: bold;")
+        self.main_signal_text = QLabel("主信号加载中..."); self.main_signal_text.setStyleSheet("font-size: 16px; font-weight: bold; color: #e0e0e0;")
+        self.main_signal_reason = QLabel(""); self.main_signal_reason.setStyleSheet("font-size: 12px; color: #7a7a9e;")
+        ml2.addWidget(self.main_signal_icon, 0, Qt.AlignCenter)
+        ml2.addWidget(self.main_signal_text, 0, Qt.AlignCenter)
+        ml2.addWidget(self.main_signal_reason, 0, Qt.AlignCenter)
+        ml.addWidget(main_frame)
+
         self.detail_frame = QFrame(); self.detail_frame.setVisible(False)
         self.detail_frame.setStyleSheet(f"background: {CARD}; border-radius: 6px; padding: 10px;")
         dl = QVBoxLayout(self.detail_frame); dl.setSpacing(5)
@@ -255,7 +266,7 @@ class MainWindow(QMainWindow):
             ap(r2, kk[1], kk[0], kk[2] if len(kk)>2 else 50)
         r2.addStretch(); self.param_group.layout().addLayout(r2)
         r3 = QHBoxLayout()
-        for kk in [("resonance_threshold","共振≥",40),("cooldown_minutes","冷却m",40),("no_trade_after_hour","截止h",40),("no_trade_before_hour","起始h",40),("max_daily_loss","日亏≤$",55),("max_drawdown_pct","回撤≤%",45)]:
+        for kk in [("resonance_threshold","共振≥",40),("cooldown_minutes","冷却m",40),("max_daily_loss","日亏≤$",55),("max_drawdown_pct","回撤≤%",45)]:
             ap(r3, kk[1], kk[0], kk[2] if len(kk)>2 else 50)
         r3.addStretch(); self.param_group.layout().addLayout(r3)
         r4 = QHBoxLayout()
@@ -553,6 +564,35 @@ class MainWindow(QMainWindow):
             if ginfo:
                 st += f"  |  {' '.join(ginfo)}"
             self.sig_text.setText(st)
+
+            # 主信号更新
+            try:
+                signal = get_trade_signal(self.symbol, self.params)
+                dir_val = signal.get("direction", 0)
+                strength = signal.get("strength", "弱")
+                reason = signal.get("reason", "")
+                conf = signal.get("confidence", 0)
+                
+                if dir_val == 1:
+                    icon = "◆" if strength == "强烈" else "◇"
+                    text = f"{strength}做多 {conf:.0%}"
+                    color = GREEN
+                elif dir_val == -1:
+                    icon = "◆" if strength == "强烈" else "◇"
+                    text = f"{strength}做空 {conf:.0%}"
+                    color = RED
+                else:
+                    icon = "─"
+                    text = "观望"
+                    color = GRAY
+                
+                self.main_signal_icon.setText(icon)
+                self.main_signal_icon.setStyleSheet(f"color: {color}; font-size: 32px; font-weight: bold;")
+                self.main_signal_text.setText(text)
+                self.main_signal_text.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: bold;")
+                self.main_signal_reason.setText(reason)
+            except Exception as e:
+                self.main_signal_icon.setText("?"); self.main_signal_text.setText("信号计算错误"); self.main_signal_reason.setText(str(e)[:60])
 
             # 信号条显示引擎加权方向，不是简单共振方向
             if ml_dir:  # 使用引擎方向
