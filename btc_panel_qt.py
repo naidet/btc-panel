@@ -675,42 +675,50 @@ class MainWindow(QMainWindow):
                 if not _mt5_lock.acquire(timeout=10): time.sleep(5); continue
                 has_position = False
                 try:
+                    if not mt5.initialize(path=MT5_PATH):
+                        time.sleep(5); continue
                     mt5.symbol_select(self.symbol, True)
                     tick = mt5.symbol_info_tick(self.symbol)
                     if not tick: time.sleep(5); continue
                     price = tick.bid or 0
 
                     pos = mt5.positions_get(symbol=self.symbol)
-                    if pos:
+                    if pos and len(pos) > 0:
                         has_position = True
                         p = pos[0]; current_sl = p.sl or 0; current_tp = p.tp or 0
                         pnl = p.profit; side = "BUY" if p.type==0 else "SELL"
 
-                        # 盈利回撤保护 (回落百分比)
-                        if pnl > profit_lock_trigger:
-                            _peak_profit = max(_peak_profit, pnl)
+                        # 盈利回撤保护 (跟踪峰值, 回落百分比触发平仓)
+                        if pnl > _peak_profit:
+                            _peak_profit = pnl
+                        if _peak_profit > profit_lock_trigger:
                             pullback_pct = (_peak_profit - pnl) / _peak_profit * 100 if _peak_profit > 0 else 0
                             if pullback_pct >= profit_lock_pullback:
-                                self.log(f"自动: 利润回落{pullback_pct:.0f}%, 平仓")
+                                self.log(f"自动: 利润峰值${_peak_profit:.1f} 回落{pullback_pct:.0f}%, 平仓")
                                 execute_trade("CLOSE", self.symbol)
                                 _last_trade_time = now; _peak_profit = 0
 
-                        # 移动止损
+                        # 移动止损 (tr_dist单位: 点数)
                         now_ts = time.time()
                         if now_ts - _last_trail_mod >= 60:
-                            tr_dist = float(self.params.get("trail_dist", 200))
+                            tr_dist_points = float(self.params.get("trail_dist", 200))
+                            # 获取point值用于点数→价格转换
+                            info = mt5.symbol_info(self.symbol)
+                            point = info.point if info else 0.00001
                             if side=="BUY":
-                                new_sl = price - tr_dist
-                                if new_sl > current_sl + 50 and abs(new_sl - _last_trail_price) > 20:
+                                new_sl = price - tr_dist_points * point
+                                if new_sl > current_sl + 50*point and abs(new_sl - _last_trail_price) > 20*point:
                                     _last_trail_price = new_sl; _last_trail_mod = now_ts
                                     threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
                             else:
-                                new_sl = price + tr_dist
-                                if current_sl==0 or new_sl < current_sl - 50:
-                                    if abs(new_sl - _last_trail_price) > 20:
+                                new_sl = price + tr_dist_points * point
+                                if current_sl==0 or new_sl < current_sl - 50*point:
+                                    if abs(new_sl - _last_trail_price) > 20*point:
                                         _last_trail_price = new_sl; _last_trail_mod = now_ts
                                         threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
                 finally:
+                    try: mt5.shutdown()
+                    except: pass
                     try: _mt5_lock.release()
                     except: pass
 
@@ -726,6 +734,7 @@ class MainWindow(QMainWindow):
                 if not time_ok:
                     self.log(f"自动: {time_reason}"); time.sleep(300); continue
 
+                # 风控闸门检查 (开仓前必做)
                 res = getattr(self, '_cached_resonance', None)
                 if not res: time.sleep(30); continue
 
@@ -733,12 +742,19 @@ class MainWindow(QMainWindow):
                 sells = sum(1 for r in res if r.get("signal")==-1)
 
                 if buys >= thresh:
+                    # 风控检查
+                    passed, reason = check_risk_gates(self.symbol, "BUY", self.params)
+                    if not passed:
+                        self.log(f"自动: 开多风控未通过: {reason}"); time.sleep(60); continue
                     hmm_s = self._hmm_state.get("state",-1)
                     if self.symbol in self._hmm_symbols and hmm_s == 2:
                         self.log("自动: HMM高波回撤, 跳过开多"); time.sleep(60); continue
                     self.log(f"自动: 共振{buys}/3看涨, 开多")
                     execute_trade("BUY", self.symbol); _last_trade_time = now
                 elif sells >= thresh:
+                    passed, reason = check_risk_gates(self.symbol, "SELL", self.params)
+                    if not passed:
+                        self.log(f"自动: 开空风控未通过: {reason}"); time.sleep(60); continue
                     hmm_s = self._hmm_state.get("state",-1)
                     if self.symbol in self._hmm_symbols and hmm_s == 1:
                         self.log("自动: HMM强势趋势, 跳过开空"); time.sleep(60); continue
@@ -752,10 +768,17 @@ class MainWindow(QMainWindow):
     def _modify_sl(self, ticket, new_sl):
         try:
             if not _mt5_lock.acquire(timeout=5): return
-            request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": new_sl, "symbol": self.symbol}
+            if not mt5.initialize(path=MT5_PATH): return
+            positions = mt5.positions_get(ticket=ticket)
+            if not positions: return
+            p = positions[0]
+            request = {"action": mt5.TRADE_ACTION_SLTP, "position": p.ticket,
+                       "symbol": p.symbol, "sl": new_sl, "tp": p.tp, "magic": 60107}
             mt5.order_send(request)
         except: pass
         finally:
+            try: mt5.shutdown()
+            except: pass
             try: _mt5_lock.release()
             except: pass
 
