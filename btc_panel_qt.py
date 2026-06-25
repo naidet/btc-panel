@@ -215,37 +215,54 @@ class MainWindow(QMainWindow):
 
         # 合并版信号卡 (实时信号 + 主信号 + HMM)
         sig_card = self._make_card("实时信号")
-        slayout = QVBoxLayout(sig_card); slayout.setSpacing(8)
-        
+        slayout = sig_card.layout()   # 复用_make_card创建好的layout，不要再新建！
+        slayout.setSpacing(8); slayout.setContentsMargins(12,10,12,10)
+
         # 第一行: 大号主信号 + HMM标签
-        sig_row1 = QHBoxLayout()
-        self.main_signal_icon = QLabel("◆"); self.main_signal_icon.setStyleSheet("font-size: 24px; font-weight: bold; color: #e0e0e0;")
+        sig_row1 = QHBoxLayout(); sig_row1.setSpacing(10)
+        self.main_signal_icon = QLabel("◆")
+        self.main_signal_icon.setStyleSheet("font-size: 24px; font-weight: bold; color: #e0e0e0;")
+        self.main_signal_icon.setMinimumSize(30, 28)  # 保证有渲染区域
         sig_row1.addWidget(self.main_signal_icon)
-        self.sig_label = QLabel("实时信号加载中..."); self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
+        self.sig_label = QLabel("等待数据...")
+        self.sig_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7a7a9e;")
+        self.sig_label.setMinimumHeight(28)  # 保证有渲染区域
         sig_row1.addWidget(self.sig_label, 1)
         
         # HMM标签 (右边显示)
-        self.hmm_label = QLabel("HMM: 加载中..."); self.hmm_label.setStyleSheet("color: #c0c0cc; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #2a2a44;")
+        self.hmm_label = QLabel("HMM: 加载中...")
+        self.hmm_label.setStyleSheet("color: #c0c0cc; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #2a2a44;")
+        self.hmm_label.setMinimumHeight(22)
         sig_row1.addWidget(self.hmm_label)
         slayout.addLayout(sig_row1)
-        
+
         # 第二行: 信号条 + HMM信息
-        sig_row2 = QHBoxLayout()
-        self.sig_bar = SignalBar(); self.sig_bar.setFixedHeight(32)
+        sig_row2 = QHBoxLayout(); sig_row2.setSpacing(8)
+        self.sig_bar = SignalBar()
+        self.sig_bar.setMinimumSize(120, 28)   # 保证有渲染区域
         sig_row2.addWidget(self.sig_bar, 1)
-        
-        self.hmm_conf = QLabel(""); self.hmm_conf.setStyleSheet("color: #7a7a9e; font-size: 11px; padding: 2px 8px;")
+        self.hmm_conf = QLabel("")
+        self.hmm_conf.setStyleSheet("color: #7a7a9e; font-size: 11px; padding: 2px 8px;")
+        self.hmm_conf.setMinimumHeight(20)
         sig_row2.addWidget(self.hmm_conf)
         slayout.addLayout(sig_row2)
-        
+
         # 第三行: 共振/引擎/组信号信息
-        self.sig_text = QLabel("共振: -/-  |  引擎: ~"); self.sig_text.setStyleSheet("color: #7a7a9e; font-size: 13px;")
+        self.sig_text = QLabel("等待数据刷新...")
+        self.sig_text.setStyleSheet("color: #7a7a9e; font-size: 13px;")
+        self.sig_text.setMinimumHeight(18)
         slayout.addWidget(self.sig_text)
         
         # 第四行: 主信号详细理由 (小号灰色)
-        self.main_signal_reason = QLabel(""); self.main_signal_reason.setStyleSheet("color: #7a7a9e; font-size: 11px; padding: 0px 4px;")
+        self.main_signal_reason = QLabel("")
+        self.main_signal_reason.setStyleSheet("color: #7a7a9e; font-size: 11px; padding: 0px 4px;")
+        self.main_signal_reason.setMinimumHeight(16)
+        self.main_signal_reason.setWordWrap(True)   # 允许换行
         slayout.addWidget(self.main_signal_reason)
-        
+
+        # 添加弹性空间，确保信号卡有足够高度
+        slayout.addStretch(0)
+
         ml.addWidget(sig_card)
         self.sig_frame = sig_card
 
@@ -549,6 +566,25 @@ class MainWindow(QMainWindow):
     def _update_ui(self, data, ml, resonance, filter_info):
         self._cached_filter_info = filter_info
         try:
+            # 🔍 验证信号卡组件是否正常（调试用）
+            if getattr(self, '_sig_check_done', False) is False:
+                self._sig_check_done = True
+                sig_parts = [
+                    ('main_signal_icon', '◆'), ('sig_label', '等待数据...'),
+                    ('hmm_label', 'HMM: '), ('sig_bar', None), ('sig_text', ''),
+                    ('main_signal_reason', '')
+                ]
+                for name, default in sig_parts:
+                    widget = getattr(self, name, None)
+                    if widget is None:
+                        self.signals.log_msg.emit(f"⚠️ 信号卡组件缺失: {name}")
+                    elif not widget.isVisible():
+                        self.signals.log_msg.emit(f"⚠️ 信号卡组件不可见: {name} → 强制显示")
+                        widget.setVisible(True)
+                    else:
+                        txt = widget.text() if hasattr(widget, 'text') else '(widget)'
+                        self.signals.log_msg.emit(f"✅ 信号卡组件OK: {name} = '{txt}'")
+
             self._cached_data = data; self._cached_ml = ml
             if resonance and len(resonance) > 0:
                 self._cached_resonance = resonance; self._resonance_fail_count = 0
