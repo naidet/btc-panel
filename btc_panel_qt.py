@@ -560,7 +560,8 @@ class MainWindow(QMainWindow):
             if conflict: txt += "  ⚠ 信号分歧"; clr = "#ff6b6b"
             if not ml.get("strong") and ml_dir:
                 txt += " (中等信号)"
-            self.sig_label.setText(txt); self.sig_label.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {clr};")
+            # sig_label 现在在主信号部分设置，这里只计算txt用于日志或其他用途
+            # self.sig_label.setText(txt); self.sig_label.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {clr};")
 
             st = f"共振 {buys}多/{sells}空  |  引擎: {ed}{ml_conf:.0f}%"
             if conflict: st += "  |  ⚠信号分歧"
