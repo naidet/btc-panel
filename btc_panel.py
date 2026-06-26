@@ -19,19 +19,71 @@ MT5_PATH = "C:/Program Files/MetaTrader 5/terminal64.exe"
 # ============================================================
 _mt5_initialized = False
 _mt5_lock = threading.RLock()  # 可重入锁, 避免死锁
+_mt5_last_ok = 0.0             # 最后一次成功操作的时间戳
+_mt5_fail_count = 0            # 连续失败计数
+_mt5_max_fails = 3             # 连续失败N次后强制重连
+_mt5_ping_interval = 30.0      # 心跳间隔(秒)
 
 def mt5_ensure():
-    """确保MT5已初始化, 返回True/False"""
-    global _mt5_initialized
-    if _mt5_initialized and mt5.terminal_info() is not None:
+    """确保MT5已初始化且连接可用, 返回True/False"""
+    global _mt5_initialized, _mt5_fail_count, _mt5_last_ok
+
+    # 快速路径：已初始化 + 最近有心跳 = 直接返回
+    if _mt5_initialized and (time.time() - _mt5_last_ok) < _mt5_ping_interval:
         return True
+
+    # 慢路径：检查连接是否真的可用
+    if _mt5_initialized:
+        try:
+            # 真实心跳：用account_info()验证连接不是僵尸
+            acct = mt5.account_info()
+            if acct is not None:
+                _mt5_last_ok = time.time()
+                _mt5_fail_count = 0
+                return True
+        except:
+            pass
+
+        # 连接是僵尸，强制重连
+        _mt5_fail_count += 1
+        if _mt5_fail_count >= _mt5_max_fails:
+            _mt5_initialized = False  # 标记失效，触发重连
+
+    # 初始化/重连
     try:
-        if mt5.initialize(path=MT5_PATH, timeout=10000):
-            _mt5_initialized = True
-            return True
+        if mt5.initialize(path=MT5_PATH, timeout=15000):
+            # 验证新连接可用
+            acct = mt5.account_info()
+            if acct is not None:
+                _mt5_initialized = True
+                _mt5_last_ok = time.time()
+                _mt5_fail_count = 0
+                return True
+            else:
+                mt5.shutdown()
+                _mt5_initialized = False
+    except:
+        try:
+            mt5.shutdown()
+        except:
+            pass
+        _mt5_initialized = False
+
+    _mt5_fail_count += 1
+    return False
+
+def mt5_reconnect():
+    """强制断开并重新连接MT5"""
+    global _mt5_initialized, _mt5_fail_count, _mt5_last_ok
+    try:
+        mt5.shutdown()
     except:
         pass
-    return False
+    _mt5_initialized = False
+    _mt5_fail_count = 0
+    _mt5_last_ok = 0.0
+    time.sleep(0.5)  # 给MT5释放资源的时间
+    return mt5_ensure()
 
 def mt5_cleanup():
     """程序退出时调用, 关闭MT5"""
@@ -41,6 +93,41 @@ def mt5_cleanup():
     except:
         pass
     _mt5_initialized = False
+
+def _mt5_mark_ok():
+    """标记一次成功的MT5操作"""
+    global _mt5_last_ok, _mt5_fail_count
+    _mt5_last_ok = time.time()
+    _mt5_fail_count = 0
+
+def _mt5_mark_fail():
+    """标记一次失败的MT5操作"""
+    global _mt5_fail_count
+    _mt5_fail_count += 1
+
+def mt5_call_with_retry(op_name, fn, retries=2, backoff=1.0):
+    """
+    MT5操作重试包装器
+    - retries: 最多重试次数
+    - backoff: 重试间隔递增倍数
+    返回: (result, success)
+    """
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            with _mt5_lock:
+                if not mt5_ensure():
+                    last_err = "mt5_ensure 失败"
+                    time.sleep(backoff * (2 ** attempt))
+                    continue
+                result = fn()
+                _mt5_mark_ok()
+                return result, True
+        except Exception as e:
+            last_err = str(e)[:80]
+            _mt5_mark_fail()
+            time.sleep(backoff * (2 ** attempt))
+    return None, False
 
 # ============================================================
 # 默认参数配置
@@ -151,28 +238,52 @@ def get_daily_pnl() -> dict:
 # MT5 数据获取 (使用全局连接, 带RLock)
 # ============================================================
 def fetch_all_mt5_data(symbol: str, include_h1: bool = True) -> Optional[dict]:
-    """获取多时间框架K线数据, 返回各周期Bar列表"""
-    with _mt5_lock:
-        if not mt5_ensure():
-            return None
+    """获取多时间框架K线数据，带重试和单周期容错"""
+    def _do_one_tf(s, tf, count):
+        """获取单个周期的K线，失败返回None"""
         try:
-            mt5.symbol_select(symbol, True)
-            frames = {
-                "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
-                "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1,
-                "H4": mt5.TIMEFRAME_H4, "D1": mt5.TIMEFRAME_D1,
-            }
-            result = {}
-            for name, tf in frames.items():
-                if name == "H1" and not include_h1:
-                    continue
-                rates = mt5.copy_rates_from_pos(symbol, tf, 0, 200)
-                if rates is not None:
-                    bars = [Bar(int(r[0]), r[1], r[2], r[3], r[4], r[5]) for r in rates]
-                    result[name] = bars
-            return result
+            rates = mt5.copy_rates_from_pos(s, tf, 0, count)
+            if rates is not None and len(rates) > 0:
+                return [Bar(int(r[0]), r[1], r[2], r[3], r[4], r[5]) for r in rates]
         except:
-            return None
+            pass
+        return None
+
+    def _do():
+        mt5.symbol_select(symbol, True)
+        frames = {
+            "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
+            "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1,
+            "H4": mt5.TIMEFRAME_H4, "D1": mt5.TIMEFRAME_D1,
+        }
+        result = {}
+        failed_tfs = []
+        for name, tf in frames.items():
+            if name == "H1" and not include_h1:
+                continue
+            bars = _do_one_tf(symbol, tf, 200)
+            if bars:
+                result[name] = bars
+            else:
+                failed_tfs.append(name)
+
+        # 至少需要核心周期（H1/H4/D1）中2个有效
+        core = ["H1", "H4", "D1"]
+        core_ok = sum(1 for c in core if c in result)
+        if core_ok < 2:
+            raise RuntimeError(f"核心周期不足 有效:{core_ok}/{len(core)}")
+        if failed_tfs:
+            raise RuntimeError(f"部分周期超时: {failed_tfs}")  # 会被重试
+        return result
+
+    # 最多重试2次；重试可以恢复超时的周期
+    for attempt in range(3):
+        result, ok = mt5_call_with_retry(f"K线获取(尝试{attempt+1})", _do, retries=0)
+        if ok and result:
+            return result
+        if attempt < 2:
+            time.sleep(1.0 * (attempt + 1))  # 递增等待
+    return None
 
 
 def fetch_dashboard_data(symbol: str, params: dict):
@@ -333,39 +444,40 @@ def fetch_dashboard_data(symbol: str, params: dict):
     return data, ml, resonance, filter_info
 
 def get_mt5_account_info() -> Optional[dict]:
-    with _mt5_lock:
-        if not mt5_ensure():
-            return None
+    """获取账户信息，带自动重试"""
+    def _do():
         acct = mt5.account_info()
         if acct:
             return {"balance": acct.balance, "equity": acct.equity,
                     "margin": acct.margin, "free_margin": acct.margin_free,
                     "login": acct.login, "server": acct.server}
         return None
+    result, ok = mt5_call_with_retry("账户查询", _do, retries=1)
+    return result if ok else None
 
 def get_mt5_positions(symbol: str = "") -> list:
-    with _mt5_lock:
-        if not mt5_ensure():
-            return []
-        try:
-            mt5.symbol_select(symbol, True) if symbol else None
-            positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
-            return list(positions or [])
-        except:
-            return []
+    """获取持仓，带自动重试"""
+    def _do():
+        if symbol:
+            mt5.symbol_select(symbol, True)
+            positions = mt5.positions_get(symbol=symbol)
+        else:
+            positions = mt5.positions_get()
+        return list(positions or [])
+    result, ok = mt5_call_with_retry("持仓查询", _do, retries=1)
+    return result if ok else []
 
 def get_mt5_tick(symbol: str):
-    """获取最新tick, 返回(symbol_info_tick, symbol_info)或(None, None)"""
-    with _mt5_lock:
-        if not mt5_ensure():
-            return None, None
-        try:
-            mt5.symbol_select(symbol, True)
-            tick = mt5.symbol_info_tick(symbol)
-            info = mt5.symbol_info(symbol)
-            return tick, info
-        except:
-            return None, None
+    """获取最新tick，带自动重试。返回(symbol_info_tick, symbol_info)或(None, None)"""
+    def _do():
+        mt5.symbol_select(symbol, True)
+        tick = mt5.symbol_info_tick(symbol)
+        info = mt5.symbol_info(symbol)
+        if tick is None or info is None:
+            raise RuntimeError("tick/info为None")
+        return (tick, info)
+    result, ok = mt5_call_with_retry("报价获取", _do, retries=2)
+    return result if ok else (None, None)
 
 # ============================================================
 # 信号计算
@@ -749,27 +861,26 @@ def execute_trade(action: str, symbol: str, params: dict = None) -> dict:
 # 修改SL (移动止损用)
 # ============================================================
 def modify_sl(ticket: int, new_sl: float) -> bool:
-    """修改持仓止损价, 带RLock"""
-    with _mt5_lock:
-        if not mt5_ensure():
+    """修改持仓止损价, 带重试"""
+    def _do():
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
             return False
-        try:
-            positions = mt5.positions_get(ticket=ticket)
-            if not positions:
-                return False
-            p = positions[0]
-            req = {
-                "action": mt5.TRADE_ACTION_SLTP,
-                "position": p.ticket,
-                "symbol": p.symbol,
-                "sl": new_sl,
-                "tp": p.tp,
-                "magic": 60107
-            }
-            result = mt5.order_send(req)
-            return result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
-        except:
-            return False
+        p = positions[0]
+        req = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": p.ticket,
+            "symbol": p.symbol,
+            "sl": new_sl,
+            "tp": p.tp,
+            "magic": 60107
+        }
+        result = mt5.order_send(req)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise RuntimeError(f"SL修改失败: {result.comment if result else '无响应'}")
+        return True
+    result, ok = mt5_call_with_retry("止损修改", _do, retries=2, backoff=1.5)
+    return result if ok else False
 
 # ============================================================
 # 交易时间过滤

@@ -23,6 +23,7 @@ from btc_panel import (
     execute_trade, fetch_all_mt5_data, fetch_dashboard_data, check_risk_gates, get_daily_pnl,
     get_mt5_tick, get_mt5_positions, get_mt5_account_info, update_hmm_state, get_trade_signal,
     _mt5_lock, MT5_PATH, DEFAULT_PARAMS, load_params, save_params, modify_sl, _load_symbol_params,
+    mt5_reconnect,
     SYMBOLS, SYMBOL_NAMES, SYMBOL_PARAMS,
     is_trade_time_allowed,
 )
@@ -511,17 +512,32 @@ class MainWindow(QMainWindow):
         sym_name = SYMBOL_NAMES.get(self.symbol, self.symbol)
         self.signals.log_msg.emit(f"════════ 第{_round}轮刷新 [{sym_name}] ════════")
 
+        # 连接健康状态
+        _conn_fail_count = getattr(self, '_conn_fail_count', 0)
+
         try:
             # Step 1: MT5数据获取
             _t1 = time.time()
             self.signals.log_msg.emit(f"📡 [1/6] 连接MT5获取数据...")
             data, ml, resonance, filter_info = fetch_dashboard_data(self.symbol, self.params)
             _t_data = time.time() - _t1
-            if data:
+            if data and data.get("price"):
                 p = data.get("price", 0)
+                self._conn_fail_count = 0
+                self.sb_mt5.setText("● 已连接"); self.sb_mt5.setStyleSheet("color: #00d26a;")
                 self.signals.log_msg.emit(f"   ✓ 报价 ${p:,.2f} | K线获取完成 ({_t_data:.1f}s)")
             else:
-                self.signals.log_msg.emit(f"   ✗ MT5数据获取失败")
+                self._conn_fail_count = getattr(self, '_conn_fail_count', 0) + 1
+                self.signals.log_msg.emit(f"   ✗ MT5数据获取失败 (连续{self._conn_fail_count}次)")
+                # 连续失败≥3次 → 尝试重连
+                if self._conn_fail_count >= 3:
+                    self.signals.log_msg.emit(f"🔄 连续{self._conn_fail_count}次失败，强制重连MT5...")
+                    self.sb_mt5.setText("⟳ 重连中..."); self.sb_mt5.setStyleSheet("color: #e0a800;")
+                    if mt5_reconnect():
+                        self.signals.log_msg.emit(f"   ✓ MT5重连成功")
+                        self._conn_fail_count = 0
+                    else:
+                        self.signals.log_msg.emit(f"   ✗ MT5重连失败，等待下轮重试")
             if ml and ml.get("ready"):
                 ml_dir_s = "多" if ml.get("signal")==1 else ("空" if ml.get("signal")==-1 else "无")
                 self.signals.log_msg.emit(f"   ✓ ML引擎: 看{ml_dir_s} {ml.get('confidence',0):.0%} | 强信号={'是' if ml.get('strong') else '否'}")
@@ -598,6 +614,8 @@ class MainWindow(QMainWindow):
                 self.price_big.setText(f"$ {p:,.2f}")
                 self.price_sub.setText(f"Bid: ${p:,.2f}  Ask: ${data.get('ask',0):,.2f}")
                 self.sb_mt5.setText("● 已连接"); self.sb_mt5.setStyleSheet("color: #00d26a;")
+            else:
+                self.sb_mt5.setText("✗ 断连"); self.sb_mt5.setStyleSheet("color: #ff4444;")
 
             # ── 持仓 ──
             pos = data.get("position")
@@ -888,11 +906,22 @@ class MainWindow(QMainWindow):
                     self.log(f"🛑 风控: 日亏${abs(daily['pnl']):.0f}≥${max_daily}, 引擎暂停5分钟")
                     time.sleep(300); continue
 
-                # ── 获取报价 ──
+                # ── 获取报价 (带自动重连) ──
                 tick, info = get_mt5_tick(self.symbol)
                 if not tick or not info:
-                    self.log("⚠️  报价获取失败, 10秒后重试")
+                    _fails = getattr(self, '_trade_fail_count', 0) + 1
+                    self._trade_fail_count = _fails
+                    self.log(f"⚠️  报价获取失败 (连续{_fails}次)")
+                    if _fails >= 3:
+                        self.log(f"🔄 报价连续{_fails}次失败，尝试重连MT5...")
+                        if mt5_reconnect():
+                            self.log(f"   ✓ MT5重连成功")
+                            self._trade_fail_count = 0
+                            time.sleep(2); continue
+                        else:
+                            self.log(f"   ✗ MT5重连失败，30秒后重试")
                     time.sleep(10); continue
+                self._trade_fail_count = 0
                 price = tick.bid
 
                 positions = get_mt5_positions(self.symbol)
