@@ -3,8 +3,8 @@ SYMBOL = "XAUUSD"
 DISPLAY = "黄金"
 PARAMS = {
     "lot_min": 0.01,
-    "sl_min": 12000,      # 黄金止损 ~0.3% ≈ $12@4000 (point=0.001)
-    "tp_min": 24000,      # 黄金止盈 ~0.6% ≈ $24@4000
+    "sl_min": 1200,       # 黄金止损 ~0.3% ≈ $12@4000 (BTGT point=0.01)
+    "tp_min": 2400,       # 黄金止盈 ~0.6% ≈ $24@4000 (BTGT point=0.01)
     "risk_per_trade": 20,
 }
 STRATEGY_CFG = {

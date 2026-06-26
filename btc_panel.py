@@ -161,8 +161,8 @@ DEFAULT_PARAMS = {
 # ============================================================
 # 品种配置
 # ============================================================
-SYMBOLS = ["BTCUSD", "XAUUSD", "XAGUSD"]
-SYMBOL_NAMES = {"BTCUSD": "BTC", "XAUUSD": "黄金", "XAGUSD": "白银"}
+SYMBOLS = ["XAUUSD", "XAGUSD"]
+SYMBOL_NAMES = {"XAUUSD": "黄金", "XAGUSD": "白银"}
 
 def _load_symbol_params(symbol: str):
     """加载品种专属配置"""
