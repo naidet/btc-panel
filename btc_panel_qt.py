@@ -891,14 +891,6 @@ class MainWindow(QMainWindow):
                 profit_lock_trigger = float(self.params.get("profit_lock_trigger",5))
                 profit_lock_pullback = float(self.params.get("profit_lock_pullback",30))
 
-                # 移动止损距离: 优先用品种STRATEGY_CFG百分比, 否则用通用点数
-                _, strategy_cfg = _load_symbol_params(self.symbol)
-                trail_pct = float(strategy_cfg.get("trail_dist_pct", 0) or 0)
-                if trail_pct > 0 and info and info.point:
-                    trail_dist_points = int(trail_pct / 100 * price / info.point)
-                else:
-                    trail_dist_points = float(self.params.get("trail_dist", 300))
-
                 # ── 风控：日亏检查 ──
                 daily = get_daily_pnl()
                 max_daily = float(self.params.get("max_daily_loss",100))
@@ -923,6 +915,14 @@ class MainWindow(QMainWindow):
                     time.sleep(10); continue
                 self._trade_fail_count = 0
                 price = tick.bid
+
+                # 移动止损距离: 优先用品种STRATEGY_CFG百分比, 否则用通用点数
+                _, strategy_cfg = _load_symbol_params(self.symbol)
+                trail_pct = float(strategy_cfg.get("trail_dist_pct", 0) or 0)
+                if trail_pct > 0 and info.point:
+                    trail_dist_points = int(trail_pct / 100 * price / info.point)
+                else:
+                    trail_dist_points = int(float(self.params.get("trail_dist", 300)))
 
                 positions = get_mt5_positions(self.symbol)
                 has_position = positions and len(positions) > 0
