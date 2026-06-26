@@ -22,7 +22,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QAction, QIcon, QPainter, QBr
 from btc_panel import (
     execute_trade, fetch_all_mt5_data, fetch_dashboard_data, check_risk_gates, get_daily_pnl,
     get_mt5_tick, get_mt5_positions, get_mt5_account_info, update_hmm_state, get_trade_signal,
-    _mt5_lock, MT5_PATH, DEFAULT_PARAMS, load_params, save_params,
+    _mt5_lock, MT5_PATH, DEFAULT_PARAMS, load_params, save_params, modify_sl, _load_symbol_params,
     SYMBOLS, SYMBOL_NAMES, SYMBOL_PARAMS,
     is_trade_time_allowed,
 )
@@ -872,7 +872,14 @@ class MainWindow(QMainWindow):
                 cooldown = int(self.params.get("cooldown_minutes",5))
                 profit_lock_trigger = float(self.params.get("profit_lock_trigger",5))
                 profit_lock_pullback = float(self.params.get("profit_lock_pullback",30))
-                trail_dist_points = float(self.params.get("trail_dist",300))
+
+                # 移动止损距离: 优先用品种STRATEGY_CFG百分比, 否则用通用点数
+                _, strategy_cfg = _load_symbol_params(self.symbol)
+                trail_pct = float(strategy_cfg.get("trail_dist_pct", 0) or 0)
+                if trail_pct > 0 and info and info.point:
+                    trail_dist_points = int(trail_pct / 100 * price / info.point)
+                else:
+                    trail_dist_points = float(self.params.get("trail_dist", 300))
 
                 # ── 风控：日亏检查 ──
                 daily = get_daily_pnl()
@@ -924,7 +931,7 @@ class MainWindow(QMainWindow):
                                 _last_trail_price = new_sl
                                 _last_trail_mod = now_ts
                                 self.log(f"📈 移动止损: 多单 SL {current_sl:.1f} → {new_sl:.1f} (锁定利润)")
-                                threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
+                                threading.Thread(target=modify_sl, args=(p.ticket,new_sl), daemon=True).start()
                         else:
                             new_sl = price + tr_dist_price
                             if current_sl == 0 or new_sl < current_sl - 50*point:
@@ -932,7 +939,7 @@ class MainWindow(QMainWindow):
                                     _last_trail_price = new_sl
                                     _last_trail_mod = now_ts
                                     self.log(f"📉 移动止损: 空单 SL {current_sl:.1f} → {new_sl:.1f} (锁定利润)")
-                                    threading.Thread(target=self._modify_sl, args=(p.ticket,new_sl), daemon=True).start()
+                                    threading.Thread(target=modify_sl, args=(p.ticket,new_sl), daemon=True).start()
 
                     time.sleep(60); continue
 
@@ -1014,22 +1021,6 @@ class MainWindow(QMainWindow):
                     self.log(f"❌ 引擎异常: {loop_err}")
                 except: pass
                 time.sleep(30)
-    def _modify_sl(self, ticket, new_sl):
-        try:
-            if not _mt5_lock.acquire(timeout=5): return
-            if not mt5.initialize(path=MT5_PATH): return
-            positions = mt5.positions_get(ticket=ticket)
-            if not positions: return
-            p = positions[0]
-            request = {"action": mt5.TRADE_ACTION_SLTP, "position": p.ticket,
-                       "symbol": p.symbol, "sl": new_sl, "tp": p.tp, "magic": 60107}
-            mt5.order_send(request)
-        except: pass
-        finally:
-            try: mt5.shutdown()
-            except: pass
-            try: _mt5_lock.release()
-            except: pass
 
 def main():
     app = QApplication(sys.argv)
