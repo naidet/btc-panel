@@ -902,21 +902,33 @@ class MainWindow(QMainWindow):
                 if has_position:
                     p = positions[0]
                     current_sl = p.sl or 0
-                    pnl = p.profit
+                    try:
+                        pnl = float(p.profit or 0)
+                    except (TypeError, ValueError):
+                        pnl = 0.0
                     side = "BUY" if p.type == 0 else "SELL"
                     side_cn = "多" if p.type == 0 else "空"
 
                     if _loop_count % 5 == 0:  # 每5轮输出一次持仓状态
                         self.log(f"📊 持仓监控: {side_cn} ${pnl:+.2f} | SL={current_sl:.1f} | 距止损={abs(price-current_sl):.1f}")
 
-                    # 盈利回撤保护
+                    # ── 盈利回撤保护 ──
                     if pnl > _peak_profit:
+                        if _loop_count % 3 == 0:
+                            self.log(f"📈 盈利创新高: ${_peak_profit:.2f} → ${pnl:.2f}")
                         _peak_profit = pnl
-                    if _peak_profit > profit_lock_trigger:
+
+                    if _peak_profit > 0:
                         pullback_pct = (_peak_profit - pnl) / _peak_profit * 100 if _peak_profit > 0 else 0
-                        if pullback_pct >= profit_lock_pullback:
-                            self.log(f"🔒 止盈: 峰值${_peak_profit:.1f} 回落{pullback_pct:.0f}% → 自动平仓")
-                            execute_trade("CLOSE", self.symbol, self.params)
+                        # 每次持仓轮都输出追高状态（便于排查）
+                        if _loop_count % 2 == 0:
+                            trigger_tag = "🔒激活" if _peak_profit > profit_lock_trigger else "⏳等待"
+                            self.log(f"📉 回撤监控: 峰值${_peak_profit:.2f} | 当前${pnl:+.2f} | 回撤{pullback_pct:.1f}% | {trigger_tag}(触发>{profit_lock_trigger})")
+                        
+                        if _peak_profit > profit_lock_trigger and pullback_pct >= profit_lock_pullback:
+                            self.log(f"🔒 止盈触发! 峰值${_peak_profit:.1f} 回撤{pullback_pct:.0f}%≥{profit_lock_pullback}% → 自动平仓")
+                            result = execute_trade("CLOSE", self.symbol, self.params)
+                            self.log(f"{'✅' if result.get('ok') else '❌'} 平仓结果: {result.get('msg','')}")
                             _last_trade_time = now
                             _peak_profit = 0.0
 

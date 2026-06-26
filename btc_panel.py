@@ -59,7 +59,7 @@ DEFAULT_PARAMS = {
     "trail_profit": 5,
     "trail_dist": 300,
     "profit_lock_trigger": 5,
-    "profit_lock_pullback": 30,
+    "profit_lock_pullback": 20,
     "risk_per_trade": 20,
     "lot_fixed": 0,
     "lot_min": 0.01,
