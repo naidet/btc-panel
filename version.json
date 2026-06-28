@@ -1,6 +1,6 @@
 {
-  "version": "5.4",
-  "url": "https://github.com/naidet/btc-panel/releases/download/v5.4/BTC_Panel_Setup_v5.4.exe",
+  "version": "5.5",
+  "url": "https://github.com/naidet/btc-panel/releases/download/v5.5/BTC_Panel_Setup_v5.5.exe",
   "size": 95000000,
-  "notes": "初版发布 — XAUUSD + BTCUSD 量化交易面板"
+  "notes": "v5.5: BTGT XAUUSD实盘参数修正 — SL/TP/移动止损/盈利锁全面优化, load_params品种配置分层修复"
 }
