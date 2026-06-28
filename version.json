@@ -1,6 +1,6 @@
 {
-  "version": "5.7",
-  "url": "https://github.com/naidet/btc-panel/releases/download/v5.7/BTC_Panel_Setup_v5.7.exe",
-  "size": 92000000,
-  "notes": "v5.7: 修复HMM模块缺失 + CDN缓存更新 + 更新弹窗QTimer修复 | 含v5.5全部XAUUSD参数优化"
+  "version": "5.8",
+  "url": "https://github.com/naidet/btc-panel/releases/download/v5.8/BTC_Panel_Setup_v5.8.exe",
+  "size": 110000000,
+  "notes": "v5.8: 彻底修复HMM(scipy导入) + 下载闪退(线程安全) + CDN更新 | 含v5.5全部XAUUSD优化"
 }
