@@ -1,6 +1,6 @@
 {
   "version": "5.6",
-  "url": "https://github.com/naidet/btc-panel/releases/download/v5.6/BTC_Panel_Setup_v5.6.exe",
+  "url": "https://github.com/naidet/btc-panel/releases/download/v5.6/BTC_Panel_v5.6.zip",
   "size": 95000000,
   "notes": "v5.6: 修复更新弹窗不显示的Bug — 改用主线程轮询替代跨线程信号 + v5.5全部修正"
 }
