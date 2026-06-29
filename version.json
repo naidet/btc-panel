@@ -1,6 +1,6 @@
 {
   "version": "5.9",
-  "url": "https://github.com/naidet/btc-panel/releases/download/v5.9/BTC_Panel_Setup_v5.9.exe",
+  "url": "http://43.153.152.6:8080/BTC_Panel_Setup_v5.9.exe",
   "size": 99338245,
   "notes": "v5.9: 修复手数计算bug(参数生效) + 单实例锁(防双开) + load_params静默异常 + HMM scipy导入"
 }
