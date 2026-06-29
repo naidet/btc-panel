@@ -14,14 +14,14 @@ from datetime import datetime
 # ═══════════════════════════════════════════
 # 配置 (部署时修改 UPDATE_URL)
 # ═══════════════════════════════════════════
-CURRENT_VERSION = "5.9"
+CURRENT_VERSION = "5.11"
 VERSION_FILE = "panel_version.txt"  # 本地存储版本号
-UPDATE_URL = "https://raw.githubusercontent.com/naidet/btc-panel/master/version.json"
+UPDATE_URL = "https://raw.githubusercontent.com/naidet/btc-panel/main/version.json"
 
 # ═══════════════════════════════════
 # 从 jsdelivr CDN 获取 version.json (带commit hash防缓存)
 # ═══════════════════════════════════
-UPDATE_URL_CDN = "https://cdn.jsdelivr.net/gh/naidet/btc-panel@master/version.json"
+UPDATE_URL_CDN = "https://cdn.jsdelivr.net/gh/naidet/btc-panel@main/version.json"
 
 # ============================================================
 # 版本检查
@@ -117,6 +117,13 @@ def download_update(url: str, version: str = "", progress_callback=None) -> str:
 
         downloaded = 0
         chunk_size = 8192
+        # 用已知 size 估算总量（GitHub 有的返回 0）
+        if total <= 0 and hasattr(resp, "headers"):
+            # 尝试从 Content-Range 头读取
+            content_range = resp.headers.get("Content-Range", "")
+            if "/" in content_range:
+                try: total = int(content_range.split("/")[-1])
+                except: pass
         with open(local_path, "wb") as f:
             while True:
                 chunk = resp.read(chunk_size)
@@ -124,9 +131,13 @@ def download_update(url: str, version: str = "", progress_callback=None) -> str:
                     break
                 f.write(chunk)
                 downloaded += len(chunk)
-                if progress_callback and total > 0:
-                    pct = min(99, int(downloaded / total * 100))
-                    progress_callback(pct, downloaded, total)
+                if progress_callback:
+                    if total > 0:
+                        pct = min(99, int(downloaded / total * 100))
+                    else:
+                        # 无 Content-Length 时用下载字节数显示进度
+                        pct = min(99, int(downloaded / 1024 / 1024 / 1.5))  # 每1.5MB一跳
+                    progress_callback(pct, downloaded, max(total, downloaded))
 
         if progress_callback:
             progress_callback(100, downloaded, total)
