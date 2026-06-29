@@ -36,3 +36,8 @@ backup_*.py
 
 # 不跟踪 panel_params.json 的本地修改（用 panel_params.json.example 做模板）
 panel_params.json
+/data/
+/models/
+/release/*
+!/release/version.json
+*.pkl
