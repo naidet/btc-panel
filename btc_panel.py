@@ -51,7 +51,7 @@ def mt5_ensure():
 
     # 初始化/重连
     try:
-        if mt5.initialize(path=MT5_PATH, timeout=15000):
+        if mt5.initialize(path=MT5_PATH, timeout=5000):
             # 验证新连接可用
             acct = mt5.account_info()
             if acct is not None:
@@ -105,6 +105,25 @@ def _mt5_mark_fail():
     global _mt5_fail_count
     _mt5_fail_count += 1
 
+def check_autotrading() -> dict:
+    """检测MT5终端AutoTrading是否开启"""
+    try:
+        with _mt5_lock:
+            if not mt5_ensure():
+                return {"enabled": False, "msg": "MT5未连接"}
+        info = mt5.terminal_info()
+        if info is None:
+            return {"enabled": False, "msg": "无法读取终端信息"}
+        return {
+            "enabled": info.trade_allowed,
+            "connected": info.connected,
+            "community_account": info.community_account,
+            "community_connection": info.community_connection,
+            "msg": "AlgoTrading已开启 ✓" if info.trade_allowed else "⚠ AutoTrading未开启 — 无法下单"
+        }
+    except Exception as e:
+        return {"enabled": False, "msg": f"检测异常: {e}"}
+
 def mt5_call_with_retry(op_name, fn, retries=2, backoff=1.0):
     """
     MT5操作重试包装器
@@ -141,7 +160,7 @@ DEFAULT_PARAMS = {
     "resonance_threshold": 2,
     "sl_atr_mult": 1.5,
     "sl_min": 800,
-    "tp_atr_mult": 2.0,
+    "tp_atr_mult": 6.0,
     "tp_min": 1500,
     "trail_profit": 5,
     "trail_dist": 300,
@@ -159,44 +178,472 @@ DEFAULT_PARAMS = {
 }
 
 # ============================================================
-# 品种配置
+# 品种配置 (支持券商自动适配)
 # ============================================================
-SYMBOLS = ["XAUUSD", "XAGUSD"]
-SYMBOL_NAMES = {"XAUUSD": "黄金", "XAGUSD": "白银"}
+# 默认品种 (MT5未连接时回退)
+# 目前只聚焦黄金和BTC
+SYMBOLS = ["XAUUSD", "BTCUSD"]
+SYMBOL_NAMES = {"XAUUSD": "黄金", "BTCUSD": "BTC"}
+BROKER_WHITELIST = {"XAUUSD", "BTCUSD"}  # auto_setup_broker 只加载这两个
+_BROKER_MAP = {}  # config名 → 券商实际名 (如 "BTCUSD" → "BTCUSD.z")
+_FILLING_MODE_CACHE = {}  # 缓存每个品种的填充模式 (symbol → mt5 filling constant)
+_DEAD_SYMBOLS = {}  # 不可用品种缓存: real_sym → (timestamp, reason) 避免无限重试
+_DEAD_SYMBOL_TTL = 300  # 死品种5分钟后重试 (市场可能重开)
+SYMBOL_PARAMS: dict = {}
+STRATEGY_PARAMS: dict = {}
 
 def _load_symbol_params(symbol: str):
-    """加载品种专属配置"""
+    """加载品种专属配置 (含POINT_REFERENCE)"""
     import importlib.util
     cfg_path = os.path.join(os.path.dirname(__file__), "symbols", symbol.lower(), "config.py")
     if os.path.exists(cfg_path):
         spec = importlib.util.spec_from_file_location(f"symcfg_{symbol}", cfg_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return getattr(mod, "PARAMS", {}), getattr(mod, "STRATEGY_CFG", {})
-    return {}, {}
+        point_ref = getattr(mod, "POINT_REFERENCE", None)
+        return getattr(mod, "PARAMS", {}), getattr(mod, "STRATEGY_CFG", {}), point_ref
+    return {}, {}, None
 
-SYMBOL_PARAMS = {}
-STRATEGY_PARAMS = {}
-for _sym in SYMBOLS:
-    _p, _s = _load_symbol_params(_sym)
-    SYMBOL_PARAMS[_sym] = _p
-    STRATEGY_PARAMS[_sym] = _s
+def _auto_calibrate_params(params: dict, ref_point: float, actual_point: float) -> dict:
+    """
+    根据券商实际point自动缩放参数
+    params: 原始参数 (基于 ref_point 校准)
+    返回: 缩放后的参数副本
+    """
+    if ref_point is None or abs(ref_point - actual_point) < 1e-9:
+        return dict(params)
+
+    scale = ref_point / actual_point
+    calibrated = dict(params)
+    # 缩放所有点数类参数
+    for key in ("sl_min", "tp_min", "trail_profit", "trail_dist"):
+        if key in calibrated and calibrated[key] is not None:
+            calibrated[key] = int(float(calibrated[key]) * scale + 0.5)
+    return calibrated
+
+def _generate_aliases(sym: str) -> list:
+    """为一个品种名生成可能的MT5券商变体列表"""
+    sym = sym.upper().strip()
+    aliases = [sym]  # 精确名
+
+    # 后缀变体: 有些券商加 .z / .m / .pro / . 等
+    for suffix in (".z", ".m", ".pro", "."):
+        aliases.append(sym + suffix)
+
+    # #前缀变体 (#BTCUSD, #XAUUSD)
+    aliases.append("#" + sym)
+
+    # USDT变体: 加密券商用USDT代替USD (如 BTCUSDT, BTCUST)
+    if sym in ("BTCUSD", "ETHUSD"):
+        aliases.append(sym.replace("USD", "USDT"))
+        aliases.append("#" + sym.replace("USD", "USDT"))
+        # 有些券商缩写为 BTCUST (去掉了D, 如 DooTechnology)
+        aliases.append(sym.replace("USD", "UST"))
+        aliases.append("#" + sym.replace("USD", "UST"))
+        # USDT也加后缀
+        for suffix in (".z", ".m", ".pro", "."):
+            aliases.append(sym.replace("USD", "USDT") + suffix)
+            aliases.append(sym.replace("USD", "UST") + suffix)
+
+    # XAU → GOLD 映射
+    if sym == "XAUUSD":
+        aliases.extend(["GOLD", "#GOLD", "GOLD.", "GOLDm", "GOLDz", "GOLD.pro",
+                        "XAUUSD.s", "XAUUSD.S",           # DooTechnology 小写后缀
+                        "#XAUUSD.s", "#XAUUSD.S"])
+    
+    # 去重保序
+    seen = set()
+    unique = []
+    for a in aliases:
+        if a not in seen:
+            seen.add(a)
+            unique.append(a)
+    return unique
+
+
+def _find_mt5_symbol(config_name: str, mt5_symbols: set, verify: bool = False) -> str:
+    """
+    在MT5品种列表中找匹配品种, 返回MT5中的实际名称
+    层级: 精确 → 前缀(后缀证) → 别名 → 模糊子串
+    verify=True 时验证 symbol_info 可读 (用于 broker setup 阶段)
+    找不到返回空字符串
+    """
+    config_name = config_name.upper()
+
+    candidates = []  # 收集所有候选名
+
+    # 1) 精确匹配
+    if config_name in mt5_symbols:
+        candidates.append(config_name)
+
+    # 2) 前缀匹配 (如 BTCUSD.z, BTCUSDpro) — 按名称长度排序, 最短优先
+    found = sorted(
+        [ms for ms in mt5_symbols if ms.upper().startswith(config_name)],
+        key=lambda x: len(x)
+    )
+    for ms in found:
+        if ms not in candidates:
+            candidates.append(ms)
+
+    # 3) 别名匹配
+    aliases = _generate_aliases(config_name)
+    for alias in aliases:
+        if alias == config_name:
+            continue
+        if alias in mt5_symbols and alias not in candidates:
+            candidates.append(alias)
+        alias_found = [
+            ms for ms in mt5_symbols
+            if ms.upper().startswith(alias) and ms not in candidates
+        ]
+        for ms in sorted(alias_found, key=lambda x: len(x)):
+            if ms not in candidates:
+                candidates.append(ms)
+
+    # 4) 子串模糊匹配
+    base = config_name.replace("USD", "").replace("USDT", "").replace("#", "")
+    if len(base) >= 3:
+        fuzzy = [
+            ms for ms in mt5_symbols
+            if base in ms.upper()
+            and len(ms) <= len(config_name) + 8
+            and ms not in candidates
+        ]
+        for ms in fuzzy:
+            if ms not in candidates:
+                candidates.append(ms)
+
+    # 验证候选 (verify=True 时检查 symbol_info 是否可读)
+    if verify:
+        for cand in list(candidates):
+            mt5.symbol_select(cand, True)
+            working_name = _verify_symbol_readable(cand)
+            if working_name:
+                print(f"[BROKER]   ✅ {config_name:12s} → {working_name} (已验证可读)")
+                return working_name
+        if config_name not in candidates:
+            mt5.symbol_select(config_name, True)
+            working_name = _verify_symbol_readable(config_name)
+            if working_name:
+                print(f"[BROKER]   ✅ {config_name:12s} → {working_name} (回退直接访问)")
+                return working_name
+        return ""
+
+    return candidates[0] if candidates else ""
+
+
+def auto_setup_broker() -> dict:
+    """
+    启动时自动检测券商并配置品种
+    返回: {"broker": str, "server": str, "symbols": [...], "warnings": [...]}
+    副作用: 更新全局 SYMBOLS, SYMBOL_NAMES, SYMBOL_PARAMS, STRATEGY_PARAMS
+    """
+    global SYMBOLS, SYMBOL_NAMES, SYMBOL_PARAMS, STRATEGY_PARAMS, _BROKER_MAP
+    import importlib.util
+
+    result = {"broker": "未知", "server": "未知", "symbols": [], "warnings": []}
+
+    # 尝试连接MT5获取券商信息
+    try:
+        if not mt5_ensure():
+            result["warnings"].append("MT5未连接, 使用默认品种列表")
+            _rebuild_params_from_static_list()
+            return result
+    except:
+        result["warnings"].append("MT5连接异常, 使用默认品种列表")
+        _rebuild_params_from_static_list()
+        return result
+
+    acct = mt5.account_info()
+    if acct:
+        result["broker"] = getattr(acct, "company", "未知") or "未知"
+        result["server"] = getattr(acct, "server", "未知") or "未知"
+
+    # 扫描symbols/目录下所有config
+    config_dir = os.path.join(os.path.dirname(__file__), "symbols")
+    available_configs = []
+    if os.path.isdir(config_dir):
+        for entry in os.listdir(config_dir):
+            cfg_file = os.path.join(config_dir, entry, "config.py")
+            if os.path.isfile(cfg_file):
+                available_configs.append(entry.upper())
+
+    # 检查MT5中实际可用的品种
+    mt5_symbols = set()
+    try:
+        all_mt5 = mt5.symbols_get()
+        if all_mt5:
+            mt5_symbols = {s.name.upper() for s in all_mt5 if s.name}
+            print(f"[BROKER] MT5品种总数: {len(mt5_symbols)}")
+    except Exception as e:
+        print(f"[BROKER] 扫描MT5品种异常: {e}")
+        pass
+
+    # ─── 诊断: 列出MT5中所有含BTC/XAU的品种 (方便排查) ───
+    _btc_xau_in_mt5 = [s for s in mt5_symbols if "BTC" in s.upper() or "XAU" in s.upper() or "GOLD" in s.upper()]
+    if _btc_xau_in_mt5:
+        print(f"[BROKER] 券商 BTC/XAU 相关品种: {sorted(_btc_xau_in_mt5)}")
+    else:
+        print(f"[BROKER] ⚠️ 券商没有任何 BTC/XAU 品种! (总品种数: {len(mt5_symbols)})")
+
+    # 匹配: 本地有config + MT5有品种 = 可用
+    # 三层匹配: 精确 → 前缀(后缀证等) → 模糊(不同命名规则)
+    matched = []
+    _BROKER_MAP.clear()
+    for sym in available_configs:
+        real_name = _find_mt5_symbol(sym, mt5_symbols, verify=True)
+        if real_name:
+            matched.append(sym)
+            if real_name != sym:
+                _BROKER_MAP[sym] = real_name
+                result["warnings"].append(f"{sym} → {real_name} (券商名映射)")
+            else:
+                _BROKER_MAP[sym] = sym
+            print(f"[BROKER]   ✅ {sym:12s} → {real_name}")
+        else:
+            result["warnings"].append(f"{sym} 在此券商不可用, 已跳过")
+            print(f"[BROKER]   ❌ {sym:12s} 未找到匹配品种")
+
+    # 白名单过滤: 只保留 XAUUSD 和 BTCUSD
+    matched = [s for s in matched if s in BROKER_WHITELIST]
+    if not matched:
+        result["warnings"].append("没有匹配的品种! 使用默认XAUUSD")
+        _rebuild_params_from_static_list()
+        return result
+
+    # 为每个匹配品种加载并校准参数
+    new_symbols = []
+    new_names = {}
+    new_params = {}
+    new_strategies = {}
+
+    for sym in matched:
+        real_sym = _BROKER_MAP.get(sym, sym)  # 券商实际名称
+        params, strategy, point_ref = _load_symbol_params(sym)
+
+        # 读取MT5实际point并校准
+        try:
+            info = mt5.symbol_info(real_sym)
+            if info and point_ref is not None:
+                actual_point = info.point
+                if abs(actual_point - point_ref) > 1e-9:
+                    params = _auto_calibrate_params(params, point_ref, actual_point)
+            elif info and info.point:
+                # 没有POINT_REFERENCE → 设为实际值 (向后兼容, 不缩放)
+                pass
+        except:
+            pass
+
+        new_symbols.append(sym)
+        # 名称从config读取
+        import importlib.util as _iu2
+        cfg_path = os.path.join(config_dir, sym.lower(), "config.py")
+        try:
+            spec = _iu2.spec_from_file_location(f"__symname_{sym}", cfg_path)
+            mod = _iu2.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            display = getattr(mod, "DISPLAY", sym)
+        except:
+            display = sym
+        new_names[sym] = display
+        new_params[sym] = params
+        new_strategies[sym] = strategy
+
+        if point_ref is not None:
+            try:
+                ap = mt5.symbol_info(real_sym).point if mt5.symbol_info(real_sym) else point_ref
+                if abs(ap - point_ref) > 1e-9:
+                    sc = point_ref / ap
+                    result["warnings"].append(
+                        f"{sym}: point={ap} (参考{point_ref}), "
+                        f"sl_min={params.get('sl_min','?')} (x{sc:.1f})"
+                    )
+            except:
+                pass
+
+    # 原地更新全局变量 (不能直接赋值, 否则 import 引用断裂)
+    SYMBOLS.clear(); SYMBOLS.extend(new_symbols)
+    SYMBOL_NAMES.clear(); SYMBOL_NAMES.update(new_names)
+    SYMBOL_PARAMS.clear(); SYMBOL_PARAMS.update(new_params)
+    STRATEGY_PARAMS.clear(); STRATEGY_PARAMS.update(new_strategies)
+    result["symbols"] = new_symbols
+
+    return result
+
+def _get_filling_mode(symbol: str):
+    """
+    自动检测券商支持的订单填充模式
+    MT5 filling_mode 位掩码:
+      1 = FOK (Fill or Kill)
+      2 = IOC (Immediate or Cancel)
+      0 = RETURN (默认, 按指定价格成交)
+    优先 IOC, 其次 FOK, 兜底 RETURN
+    """
+    from typing import Optional
+    real_sym = _real_symbol(symbol)
+
+    # 查缓存
+    if real_sym in _FILLING_MODE_CACHE:
+        return _FILLING_MODE_CACHE[real_sym]
+
+    mode = mt5.ORDER_FILLING_RETURN  # 默认
+    try:
+        info = mt5.symbol_info(real_sym)
+        if info:
+            fm = info.filling_mode
+            if fm & 2:  # IOC supported
+                mode = mt5.ORDER_FILLING_IOC
+            elif fm & 1:  # FOK supported
+                mode = mt5.ORDER_FILLING_FOK
+            # else: RETURN (默认)
+            _FILLING_MODE_CACHE[real_sym] = mode
+            mode_names = {mt5.ORDER_FILLING_IOC: "IOC", mt5.ORDER_FILLING_FOK: "FOK", mt5.ORDER_FILLING_RETURN: "RETURN"}
+            print(f"[FILL] {real_sym} 填充模式: {mode_names.get(mode, mode)} (filling_mode={fm})")
+        else:
+            _FILLING_MODE_CACHE[real_sym] = mode
+    except:
+        _FILLING_MODE_CACHE[real_sym] = mode
+
+    return mode
+
+
+def _verify_symbol_readable(real_sym: str) -> Optional[str]:
+    """检查品种是否可读, 返回可用的名称 (大小写修正后), 不可读返回 None"""
+    # 尝试原名
+    try:
+        info = mt5.symbol_info(real_sym)
+        if info is not None:
+            return real_sym
+    except:
+        pass
+    # 尝试大小写变体
+    variants = set()
+    variants.add(real_sym.lower())
+    if "." in real_sym:
+        base, ext = real_sym.rsplit(".", 1)
+        variants.add(f"{base}.{ext.lower()}")
+        variants.add(f"{base}.{ext.upper()}")
+    for v in sorted(variants):
+        if v == real_sym:
+            continue
+        try:
+            info = mt5.symbol_info(v)
+            if info is not None:
+                print(f"[VERIFY] {real_sym} → {v} (大小写变体命中)")
+                return v
+        except:
+            pass
+    return None
+
+
+def _real_symbol(sym: str) -> str:
+    """将配置名称解析为券商实际名称"""
+    return _BROKER_MAP.get(sym, sym)
+
+def _rebuild_params_from_static_list():
+    """回退: 用模块默认的SYMBOLS加载参数 (不校准)"""
+    global SYMBOL_PARAMS, STRATEGY_PARAMS
+    SYMBOL_PARAMS.clear()
+    STRATEGY_PARAMS.clear()
+    for _sym in SYMBOLS:
+        _p, _s, _ = _load_symbol_params(_sym)
+        SYMBOL_PARAMS[_sym] = _p
+        STRATEGY_PARAMS[_sym] = _s
+
+# 首次加载: 先用静态配置快速启动, 券商检测延迟到后台执行
+_rebuild_params_from_static_list()
+_broker_info: dict = {}  # 后台线程填充
+_broker_ready = False     # 标记已检测完成
+
+def lazy_broker_setup():
+    """后台运行券商检测, 不阻塞主线程 (由Qt面板在窗口显示后调用)"""
+    global _broker_info, _broker_ready
+    try:
+        print("[BROKER] lazy_broker_setup 开始扫描...")
+        _broker_info = auto_setup_broker()
+        print(f"[BROKER] 扫描完成: {len(_broker_info.get('symbols',[]))} 个品种 - {_broker_info.get('symbols',[])}")
+    except Exception as _e:
+        print(f"[BROKER] 异常: {_e}")
+        import traceback; traceback.print_exc()
+        _rebuild_params_from_static_list()
+        _broker_info = {"broker": "错误", "server": str(_e)[:80], "symbols": list(SYMBOLS), "warnings": [f"自动检测异常: {str(_e)[:100]}"]}
+    _broker_ready = True
+    print(f"[BROKER] _broker_ready = True")
+
 
 # ============================================================
 # 参数持久化
 # ============================================================
-def load_params(filepath="panel_params.json"):
-    if os.path.exists(filepath):
+def _data_dir():
+    """返回数据存储目录(绝对路径) — 优先AppData(无需admin), 兜底EXE目录"""
+    try:
+        import sys
+        if getattr(sys, 'frozen', False):
+            # 冻结exe: 优先%APPDATA%\BTC Panel (Program Files可能无写权限)
+            appdata = os.environ.get("APPDATA", "")
+            if appdata:
+                d = os.path.join(appdata, "BTC Panel")
+                os.makedirs(d, exist_ok=True)
+                return d
+            return os.path.dirname(sys.executable)
+        return os.path.dirname(os.path.abspath(__file__))
+    except:
+        return os.getcwd()
+
+def load_params(symbol=None, filepath="panel_params.json"):
+    """加载参数。如果提供 symbol, 优先加载品种专属文件 (panel_params_BTCUSD.json)"""
+    base = _data_dir()
+    if symbol:
+        sym_file = os.path.join(base, f"panel_params_{symbol}.json")
+        # 品种专属默认值 (覆盖 DEFAULT_PARAMS 中的 BTC 默认值)
+        sp = SYMBOL_PARAMS.get(symbol, {})
+        sc = STRATEGY_PARAMS.get(symbol, {})
+        if os.path.exists(sym_file):
+            try:
+                with open(sym_file, encoding="utf-8") as f:
+                    raw = json.load(f)
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                # JSON损坏或无法读取 — 记录错误但继续用品种默认值
+                print(f"[load_params] 无法解析 {sym_file}: {e}", file=sys.stderr)
+                raw = {}
+            return {**DEFAULT_PARAMS, **sp, **sc, **raw}
+        # 迁移: 如果旧通用文件存在, 复制一份作为品种初始值
+        legacy_file = os.path.join(base, filepath)
+        if os.path.exists(legacy_file):
+            try:
+                with open(legacy_file, encoding="utf-8") as f:
+                    legacy = {**DEFAULT_PARAMS, **json.load(f)}
+            except (json.JSONDecodeError, OSError, ValueError):
+                legacy = dict(DEFAULT_PARAMS)
+            legacy.update(sp)
+            legacy.update(sc)
+            save_params(legacy, symbol=symbol)
+            return legacy
+        # 品种文件不存在、无旧文件 — 用品种默认值
+        return {**DEFAULT_PARAMS, **sp, **sc}
+    # 未指定symbol: 通读通用文件
+    generic = os.path.join(base, filepath)
+    if os.path.exists(generic):
         try:
-            with open(filepath, encoding="utf-8") as f:
+            with open(generic, encoding="utf-8") as f:
                 return {**DEFAULT_PARAMS, **json.load(f)}
-        except:
+        except (json.JSONDecodeError, OSError, ValueError):
             pass
     return dict(DEFAULT_PARAMS)
 
-def save_params(params, filepath="panel_params.json"):
+def save_params(params, symbol=None, filepath="panel_params.json"):
+    base = _data_dir()
+    if symbol:
+        filepath = os.path.join(base, f"panel_params_{symbol}.json")
+    else:
+        filepath = os.path.join(base, filepath)
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(params, f, indent=2, ensure_ascii=False)
+
+def get_params_file(symbol: str) -> str:
+    """返回品种专属参数文件路径(绝对路径)"""
+    name = f"panel_params_{symbol.upper()}.json" if symbol else "panel_params.json"
+    return os.path.join(_data_dir(), name)
 
 # ============================================================
 # 当日盈亏追踪
@@ -250,7 +697,8 @@ def fetch_all_mt5_data(symbol: str, include_h1: bool = True) -> Optional[dict]:
         return None
 
     def _do():
-        mt5.symbol_select(symbol, True)
+        real_sym = _real_symbol(symbol)  # 券商实际名称
+        mt5.symbol_select(real_sym, True)
         frames = {
             "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
             "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1,
@@ -261,7 +709,7 @@ def fetch_all_mt5_data(symbol: str, include_h1: bool = True) -> Optional[dict]:
         for name, tf in frames.items():
             if name == "H1" and not include_h1:
                 continue
-            bars = _do_one_tf(symbol, tf, 200)
+            bars = _do_one_tf(real_sym, tf, 200)
             if bars:
                 result[name] = bars
             else:
@@ -457,10 +905,11 @@ def get_mt5_account_info() -> Optional[dict]:
 
 def get_mt5_positions(symbol: str = "") -> list:
     """获取持仓，带自动重试"""
+    real_sym = _real_symbol(symbol) if symbol else ""
     def _do():
-        if symbol:
-            mt5.symbol_select(symbol, True)
-            positions = mt5.positions_get(symbol=symbol)
+        if real_sym:
+            mt5.symbol_select(real_sym, True)
+            positions = mt5.positions_get(symbol=real_sym)
         else:
             positions = mt5.positions_get()
         return list(positions or [])
@@ -469,15 +918,113 @@ def get_mt5_positions(symbol: str = "") -> list:
 
 def get_mt5_tick(symbol: str):
     """获取最新tick，带自动重试。返回(symbol_info_tick, symbol_info)或(None, None)"""
+    real_sym = _real_symbol(symbol)
+    if not real_sym:
+        print(f"[TICK] {symbol}: _real_symbol 返回空, 跳过")
+        return (None, None)
+
+    # 检查是否已标记为不可用 (避免无限重试)
+    if real_sym in _DEAD_SYMBOLS:
+        ts, reason = _DEAD_SYMBOLS[real_sym]
+        if time.time() - ts < _DEAD_SYMBOL_TTL:
+            return (None, None)  # 静默跳过
+        else:
+            del _DEAD_SYMBOLS[real_sym]  # TTL过期, 重试一次
+            print(f"[TICK] {real_sym} 死缓存过期, 重新尝试...")
+
     def _do():
-        mt5.symbol_select(symbol, True)
-        tick = mt5.symbol_info_tick(symbol)
-        info = mt5.symbol_info(symbol)
+        # 先试券商映射名
+        ok = mt5.symbol_select(real_sym, True)
+        if not ok:
+            ok = mt5.symbol_select(real_sym, False)
+
+        # 映射名失败 → 尝试原始配置名 (有的券商品种不在symbols_get()列表但可直接访问)
+        tick = mt5.symbol_info_tick(real_sym)
+        info = mt5.symbol_info(real_sym)
+
+        # 大小写变体重试 (如 XAUUSD.S → XAUUSD.s)
+        if (tick is None or info is None) and "." in real_sym:
+            base, ext = real_sym.rsplit(".", 1)
+            alt = f"{base}.{ext.lower() if ext.isupper() else ext.upper()}"
+            if alt != real_sym:
+                mt5.symbol_select(alt, True)
+                tick2 = mt5.symbol_info_tick(alt)
+                info2 = mt5.symbol_info(alt)
+                if tick2 is not None and info2 is not None:
+                    tick, info = tick2, info2
+                    _BROKER_MAP[symbol] = alt  # 更新为正确的大小写
+                    _DEAD_SYMBOLS.pop(real_sym, None)
+                    print(f"[TICK] ✅ {alt} (大小写变体命中), 更新映射")
+        use_name = real_sym
+
+        if (tick is None or info is None) and real_sym != symbol:
+            # 用原始名重试
+            mt5.symbol_select(symbol, True)
+            tick2 = mt5.symbol_info_tick(symbol)
+            info2 = mt5.symbol_info(symbol)
+            if tick2 is not None and info2 is not None:
+                tick, info, use_name = tick2, info2, symbol
+                # 更新映射缓存, 下次直接用
+                _BROKER_MAP[symbol] = symbol
+                _DEAD_SYMBOLS.pop(real_sym, None)
+                print(f"[TICK] ✅ {symbol} 直接可用 (回退成功), 更新映射")
+
         if tick is None or info is None:
+            if info and info.trade_mode != mt5.SYMBOL_TRADE_MODE_FULL:
+                print(f"[TICK] {real_sym} 市场关闭 (trade_mode={info.trade_mode})")
+            else:
+                # 标记为不可用, 避免后续无限重试
+                _DEAD_SYMBOLS[real_sym] = (time.time(), "symbol_info返回None")
             raise RuntimeError("tick/info为None")
+        # 可用了, 从死缓存移除
+        _DEAD_SYMBOLS.pop(real_sym, None)
         return (tick, info)
-    result, ok = mt5_call_with_retry("报价获取", _do, retries=2)
+    result, ok = mt5_call_with_retry("报价获取", _do, retries=1)
     return result if ok else (None, None)
+
+
+def _ensure_symbols_ready(symbols: list):
+    """
+    券商切换后，确保所有品种可读取数据
+    用于 auto_setup_broker 后调用
+    """
+    for sym in symbols:
+        real = _real_symbol(sym)
+        print(f"[INIT] 初始化 {sym} → {real} ...")
+        def _do():
+            # 尝试多种方式激活品种 (含大小写变体)
+            ok = mt5.symbol_select(real, True)
+            if not ok:
+                ok = mt5.symbol_select(real, False)
+            if not ok:
+                ok = mt5.symbol_select(sym, True)
+            # 用 _verify_symbol_readable 做大小写回退
+            working_name = _verify_symbol_readable(real)
+            if working_name is None:
+                # 尝试原始名
+                working_name = _verify_symbol_readable(sym)
+            if working_name is None:
+                raise RuntimeError(f"symbol_info({real}) 返回 None (品种不存在)")
+            # 如果大小写修正了, 更新映射
+            if working_name != real:
+                _BROKER_MAP[sym] = working_name
+                print(f"[INIT] ⚠️ 名称修正: {real} → {working_name}")
+            # 验证可读
+            info = mt5.symbol_info(working_name)
+            if info.trade_mode != mt5.SYMBOL_TRADE_MODE_FULL:
+                print(f"[INIT] ⚠️ {sym} 交易模式={info.trade_mode} (非全模式, 可能市场关闭)")
+            # symbol_select 失败只是警告, 不影响后续使用
+            if not ok:
+                print(f"[INIT] ⚠️ {real} symbol_select 失败但不影响数据读取")
+            return True
+        result, ok = mt5_call_with_retry(f"品种初始化{sym}", _do, retries=1)
+        if ok:
+            print(f"[INIT] ✅ {sym} 就绪")
+            # 预检测填充模式
+            _get_filling_mode(sym)
+        else:
+            print(f"[INIT] ❌ {sym} 初始化失败")
+    print(f"[INIT] 品种就绪检查完成")
 
 # ============================================================
 # 信号计算
@@ -672,6 +1219,19 @@ def get_trade_signal(symbol: str, params: dict) -> dict:
         atr_ok = filter_info.get("spread_pct", 0) <= float(params.get("max_spread_pct", 0.15))
         daily_ok = abs(filter_info.get("daily_pnl", 0)) < abs(float(params.get("max_daily_loss", 100)))
         
+        # 8. 冲突检测: ML引擎 vs 加权投票
+        ml_dir = ml.get("signal", 0) if ml and ml.get("ready") else 0
+        ml_confidence = ml.get("confidence", 0) if ml and ml.get("ready") else 0
+        # 只有当两者都有效且方向相反时才算冲突
+        conflict = (direction != 0 and ml_dir != 0 and direction != ml_dir)
+        
+        # 9. 如果冲突且方向强度弱 → 降级为观望
+        if conflict and strength == "弱":
+            direction = 0
+            confidence = 0
+            strength = "弱"
+            reasons = ["信号分歧:加权与引擎方向不一致, 建议观望"]
+        
         return {
             "direction": direction,
             "strength": strength,
@@ -686,7 +1246,10 @@ def get_trade_signal(symbol: str, params: dict) -> dict:
                 "daily_filter": daily_ok
             },
             "weighted": weighted,
-            "raw_ml": ml
+            "raw_ml": ml,
+            "ml_dir": ml_dir,
+            "ml_confidence": ml_confidence,
+            "conflict": conflict
         }
     except Exception as e:
         return {
@@ -714,7 +1277,8 @@ def check_risk_gates(symbol: str, side: str, params: dict) -> Tuple[bool, str]:
 
     with _mt5_lock:
         if mt5_ensure():
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H4, 0, 30)
+            real_sym = _real_symbol(symbol)
+            rates = mt5.copy_rates_from_pos(real_sym, mt5.TIMEFRAME_H4, 0, 30)
             if rates is not None and len(rates) > 14:
                 trs = []
                 for i in range(1, len(rates)):
@@ -743,28 +1307,38 @@ def execute_trade(action: str, symbol: str, params: dict = None) -> dict:
     返回: {"ok": bool, "msg": str, ...}
     """
     if params is None:
-        params = load_params()
+        # 加载品种专属参数 (切到BTC/黄金时各自独立)
+        params = load_params(symbol)
 
-    sym_params, _ = _load_symbol_params(symbol)
+    sym_params, _, _ = _load_symbol_params(symbol)
+    real_sym = _real_symbol(symbol)
 
     with _mt5_lock:
         if not mt5_ensure():
             return {"ok": False, "msg": "MT5连接失败"}
 
         try:
-            mt5.symbol_select(symbol, True)
-            tick = mt5.symbol_info_tick(symbol)
-            info = mt5.symbol_info(symbol)
+            mt5.symbol_select(real_sym, True)
+            tick = mt5.symbol_info_tick(real_sym)
+            info = mt5.symbol_info(real_sym)
             if not tick or not info:
                 return {"ok": False, "msg": "无法获取报价或品种信息"}
 
+            # 品种报价精度 (BTC通常digits=2, 黄金digits=2, 外汇digits=5)
+            digits = info.digits
+
             # ========== 平仓 ==========
             if action == "CLOSE":
-                positions = mt5.positions_get(symbol=symbol)
+                positions = mt5.positions_get(symbol=real_sym)
                 if not positions:
                     return {"ok": True, "msg": "无持仓"}
                 for p in positions:
+                    # AutoTrading 检查
+                    at_info = mt5.terminal_info()
+                    if at_info and not at_info.trade_allowed:
+                        return {"ok": False, "msg": "MT5 AlgoTrading未开启 — 点击MT5顶部 ⚡AlgoTrading 按钮"}
                     close_price = tick.bid if p.type == 0 else tick.ask
+                    close_price = round(close_price, digits)
                     req = {
                         "action": mt5.TRADE_ACTION_DEAL,
                         "symbol": p.symbol,
@@ -774,7 +1348,7 @@ def execute_trade(action: str, symbol: str, params: dict = None) -> dict:
                         "price": close_price,
                         "magic": 60107,
                         "comment": "BTC-AI-CLOSE",
-                        "type_filling": mt5.ORDER_FILLING_IOC
+                        "type_filling": _get_filling_mode(symbol)
                     }
                     result = mt5.order_send(req)
                     if not result or result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -784,7 +1358,7 @@ def execute_trade(action: str, symbol: str, params: dict = None) -> dict:
             # ========== 开仓 ==========
             is_buy = (action == "BUY")
             order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
-            price = tick.ask if is_buy else tick.bid
+            price = round(tick.ask if is_buy else tick.bid, digits)
 
             # --- SL/TP 距离 (点数) ---
             sl_atr_mult = float(params.get("sl_atr_mult", 1.5) or sym_params.get("sl_atr_mult", 1.5))
@@ -793,24 +1367,27 @@ def execute_trade(action: str, symbol: str, params: dict = None) -> dict:
             tp_min_cfg = float(params.get("tp_min", 1500) or sym_params.get("tp_min", 1500))
 
             # 从H4计算ATR (转换为点数)
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H4, 0, 20)
+            rates = mt5.copy_rates_from_pos(real_sym, mt5.TIMEFRAME_H4, 0, 20)
             sl_points = int(sl_min_cfg)
             tp_points = int(tp_min_cfg)
+            point = info.point
             if rates is not None and len(rates) > 14:
                 trs = []
                 for i in range(1, len(rates)):
                     h, l, c = rates[i][2], rates[i][3], rates[i-1][4]
                     trs.append(max(h-l, abs(h-c), abs(l-c)))
                 atr_price = np.mean(trs[-14:])
-                point = info.point
                 atr_points = atr_price / point if point > 0 else atr_price * 10000
                 sl_points = max(int(sl_min_cfg), int(atr_points * sl_atr_mult))
                 tp_points = max(int(tp_min_cfg), int(atr_points * tp_atr_mult))
 
-            # --- SL/TP 价格 ---
-            point = info.point
-            sl_price = (price - sl_points * point) if is_buy else (price + sl_points * point)
-            tp_price = (price + tp_points * point) if is_buy else (price - tp_points * point)
+            # --- SL/TP 价格 (按品种精度取整, MT5要求) ---
+            if is_buy:
+                sl_price = round(price - sl_points * point, digits)
+                tp_price = round(price + tp_points * point, digits)
+            else:
+                sl_price = round(price + sl_points * point, digits)
+                tp_price = round(price - tp_points * point, digits)
 
             # --- 手数计算 ---
             lot_fixed = float(params.get("lot_fixed", 0) or sym_params.get("lot_fixed", 0))
@@ -832,10 +1409,18 @@ def execute_trade(action: str, symbol: str, params: dict = None) -> dict:
             lot = max(lot_min, min(lot, info.volume_max or 100))
             lot = math.floor(lot * 100) / 100  # 向下取整到0.01手
 
+            if lot <= 0:
+                return {"ok": False, "msg": f"计算手数异常: lot={lot}"}
+
+            # --- 发送订单前检查 AutoTrading ---
+            at_info = mt5.terminal_info()
+            if at_info and not at_info.trade_allowed:
+                return {"ok": False, "msg": "MT5 AlgoTrading未开启 — 点击MT5顶部 ⚡AlgoTrading 按钮"}
+
             # --- 发送订单 ---
             req = {
                 "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
+                "symbol": real_sym,
                 "volume": lot,
                 "type": order_type,
                 "price": price,
@@ -843,12 +1428,12 @@ def execute_trade(action: str, symbol: str, params: dict = None) -> dict:
                 "tp": tp_price,
                 "magic": 60107,
                 "comment": "BTC-AI-OPEN",
-                "type_filling": mt5.ORDER_FILLING_IOC
+                "type_filling": _get_filling_mode(symbol)
             }
             result = mt5.order_send(req)
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 return {"ok": True,
-                        "msg": f"开仓成功 {action} {lot}手 SL:{sl_price:.5f} TP:{tp_price:.5f}",
+                        "msg": f"开仓成功 {action} {lot}手 SL:{sl_price} TP:{tp_price}",
                         "ticket": result.order, "sl": sl_price, "tp": tp_price,
                         "sl_points": sl_points, "tp_points": tp_points}
             else:
@@ -861,17 +1446,21 @@ def execute_trade(action: str, symbol: str, params: dict = None) -> dict:
 # 修改SL (移动止损用)
 # ============================================================
 def modify_sl(ticket: int, new_sl: float) -> bool:
-    """修改持仓止损价, 带重试"""
+    """修改持仓止损价, 带重试。new_sl 应按品种精度已取整"""
     def _do():
         positions = mt5.positions_get(ticket=ticket)
         if not positions:
             return False
         p = positions[0]
+        # 获取品种精度, 取整SL
+        info = mt5.symbol_info(p.symbol)
+        digits = info.digits if info else 2
+        sl = round(float(new_sl), digits)
         req = {
             "action": mt5.TRADE_ACTION_SLTP,
             "position": p.ticket,
             "symbol": p.symbol,
-            "sl": new_sl,
+            "sl": sl,
             "tp": p.tp,
             "magic": 60107
         }
