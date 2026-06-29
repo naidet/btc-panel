@@ -38,6 +38,5 @@ backup_*.py
 panel_params.json
 /data/
 /models/
-/release/*
-!/release/version.json
+/release/
 *.pkl

@@ -16,12 +16,12 @@ from datetime import datetime
 # ═══════════════════════════════════════════
 CURRENT_VERSION = "5.9"
 VERSION_FILE = "panel_version.txt"  # 本地存储版本号
-UPDATE_URL = "https://raw.githubusercontent.com/naidet/btc-panel/main/version.json"
+UPDATE_URL = "https://raw.githubusercontent.com/naidet/btc-panel/master/version.json"
 
 # ═══════════════════════════════════
 # 从 jsdelivr CDN 获取 version.json (带commit hash防缓存)
 # ═══════════════════════════════════
-UPDATE_URL_CDN = "https://cdn.jsdelivr.net/gh/naidet/btc-panel@main/version.json"
+UPDATE_URL_CDN = "https://cdn.jsdelivr.net/gh/naidet/btc-panel@master/version.json"
 
 # ============================================================
 # 版本检查
